@@ -1,0 +1,939 @@
+/**
+ * muteki-orchestrator — Muteki 蜂群预设的程序化派单层。
+ *
+ * 挂在 preset-muteki 的 plugins 数组里（agent scope），因此：
+ *   - 工具对使用该预设的会话可见；
+ *   - execute 收到的 exec.agent 就是调用者本人，能通过 subagents 的
+ *     "exact live parent agent" 校验。
+ *
+ * 提供：
+ *   1. muteki_dispatch 工具：认领 lane（可选）→ startActivation 起子代理；
+ *   2. muteki_tick 工具：从黑板任务队列取 open 任务，原子认领后批量派单；
+ *   3. muteki_run 工具：自动循环 tick，等子代理完成、发现 flag 即停止调度；
+ *   4. 子代理生命周期记账（subagents.jsonl）；
+ *   5. 每小时派单次数上限（runs.json）与每小时成本上限（costs.json）；
+ *   6. muteki_cli 工具：用本地 Claude Code CLI（config-worker 干净配置）跑异构 Step。
+ */
+import z from "@deepseek-ai/schemastery";
+import { defineTool } from "@deepseek-ai/dsh-tools";
+import { spawnSync, execFile } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+export const name = "muteki-orchestrator";
+
+export const inject = ["tools"];
+
+export const Config = z.object({
+  python: z.string().default("python"),
+  boardPy: z.string().default(join(homedir(), ".dsh-muteki", "board.py")),
+  storageDir: z.string().default(join(homedir(), ".dsh-muteki", "artifacts")),
+  maxRunsPerHour: z.number().step(1).min(1).default(12),
+  hardCancelOnFlag: z.boolean().default(true),
+  claudeBin: z.string().default("claude"),
+  claudeConfigDir: z.string().default(""),
+  maxCostUsdPerHour: z.number().default(3),
+  enabled: z.boolean().default(true),
+});
+
+const HOUR = 3600_000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function apply(ctx, config) {
+  if (!config.enabled) return;
+
+  /** 把模板里的 {{PYTHON}} / {{BOARD}} / {{STORAGE}} 替换成本机配置。 */
+  const fillCmd = (text) =>
+    String(text)
+      .replaceAll("{{PYTHON}}", config.python || "python")
+      .replaceAll("{{BOARD}}", config.boardPy || "board.py")
+      .replaceAll("{{STORAGE}}", config.storageDir);
+
+  const runsFile = join(config.storageDir, "runs.json");
+  const subagentLog = join(config.storageDir, "subagents.jsonl");
+  mkdirSync(config.storageDir, { recursive: true });
+
+  const readRuns = () => {
+    try {
+      const parsed = JSON.parse(readFileSync(runsFile, "utf8"));
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((x) => (typeof x === "number" ? { ts: x, challenge: "" } : x))
+        .filter((x) => x && typeof x.ts === "number");
+    } catch {
+      return [];
+    }
+  };
+  // 额度按「题」独立：只统计当前题最近一小时内的派单，其他题的记录不占本题额度。
+  const recentRuns = (challenge) =>
+    readRuns().filter((x) => Date.now() - x.ts < HOUR && x.challenge === (challenge ?? ""));
+  const recordRun = (challenge) => {
+    // 保留 24h 内所有题的记录，切回旧题时额度仍连续；只清理过期项。
+    const runs = readRuns().filter((x) => Date.now() - x.ts < 24 * HOUR);
+    runs.push({ ts: Date.now(), challenge: challenge ?? "" });
+    try {
+      writeFileSync(runsFile, JSON.stringify(runs), "utf8");
+    } catch {
+      /* 账本写不进去不影响派单 */
+    }
+  };
+
+  // ── 成本记账（CLI 引擎按 Claude Code 上报的 total_cost_usd 累计）──────────
+  const costsFile = join(config.storageDir, "costs.json");
+  const readCosts = () => {
+    try {
+      const parsed = JSON.parse(readFileSync(costsFile, "utf8"));
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((x) => (x && typeof x.ts === "number" ? { ...x, challenge: x.challenge ?? "" } : null))
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+  const recentCosts = (challenge) =>
+    readCosts().filter((x) => Date.now() - x.ts < HOUR && x.challenge === (challenge ?? ""));
+  const totalCost = (challenge) =>
+    recentCosts(challenge).reduce((sum, x) => sum + (Number(x.usd) || 0), 0);
+  const recordCost = (usd, engine, challenge) => {
+    const value = Number(usd) || 0;
+    if (value <= 0) return;
+    try {
+      const all = readCosts().filter((x) => Date.now() - x.ts < 24 * HOUR);
+      all.push({ ts: Date.now(), usd: value, engine, challenge: challenge ?? "" });
+      writeFileSync(costsFile, JSON.stringify(all), "utf8");
+    } catch {
+      /* 记账失败不影响结果 */
+    }
+  };
+  const costBudgetLeft = (challenge) =>
+    Math.max(0, config.maxCostUsdPerHour - totalCost(challenge));
+
+  const logSubagent = (kind, info) => {
+    try {
+      appendFileSync(
+        subagentLog,
+        JSON.stringify({ kind, ts: new Date().toISOString(), ...info }) + "\n",
+        "utf8",
+      );
+    } catch {
+      /* 记账失败不应中断子代理 */
+    }
+  };
+  ctx.on("subagent/start", (info) => logSubagent("start", info));
+  ctx.on("subagent/end", (info) => logSubagent("end", info));
+
+  const runBoard = (argv, cwd) => {
+    const run = spawnSync(config.python, [config.boardPy, ...argv], {
+      cwd,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return { status: run.status ?? 1, out: `${run.stdout || ""}${run.stderr || ""}`.trim() };
+  };
+
+  const openTasks = (cwd) => {
+    const run = runBoard(["task", "list", "--status", "open", "--json"], cwd);
+    if (run.status !== 0) throw new Error(`读取任务队列失败：${run.out}`);
+    try {
+      const parsed = JSON.parse(run.out || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      throw new Error(`任务队列 JSON 解析失败：${run.out.slice(0, 200)}`);
+    }
+  };
+
+  const boardJson = (cwd) => {
+    const run = runBoard(["context", "--json"], cwd);
+    if (run.status !== 0) return null;
+    try {
+      return JSON.parse(run.out);
+    } catch {
+      return null;
+    }
+  };
+
+  const knownFlags = (cwd) => {
+    const data = boardJson(cwd);
+    return Array.isArray(data?.flags) ? data.flags : [];
+  };
+
+  const currentChallenge = (cwd) => {
+    const run = runBoard(["current"], cwd);
+    return run.status === 0 ? run.out.trim() || "default" : "default";
+  };
+
+  const flagValue = (flag) =>
+    typeof flag === "string" ? flag : String(flag?.value ?? flag?.flag ?? flag);
+
+  const openReviews = (cwd) => {
+    const run = runBoard(["review", "list", "--status", "open", "--json"], cwd);
+    if (run.status !== 0) return [];
+    try {
+      const parsed = JSON.parse(run.out || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+  const openReviewIds = (cwd) => openReviews(cwd).map((row) => row.id);
+  const reviewRow = (cwd, id) => openReviews(cwd).find((row) => row.id === id);
+
+  const agentOptionsFor = (args) => {
+    const options = {};
+    if (args.provider && args.model) {
+      options.provider = args.provider;
+      options.model = args.model;
+      if (args.reasoning_effort) options.reasoningEffort = args.reasoning_effort;
+    }
+    return options;
+  };
+
+  const workerPrompt = (task, contextText, challenge) => fillCmd(`你是 Muteki 蜂群的一名 Worker，只执行下面这一个有界 Step。
+
+当前题：${challenge || "default"}（黑板已按题隔离；你的所有 board.py 命令都只作用于这道题，不会看到旧题的结论）
+
+## 团队黑板（只读摘要）
+${contextText}
+
+## 你的任务
+任务编号：t${task.id}
+标题：${task.title}
+详情：${task.detail || "（无）"}
+
+## 硬要求
+1. 开始前先跑一次 \`board.py context\`：如果图中已有 flag，立刻 \`board.py task done ${task.id}\` 并结束，不要重复劳动。
+2. 只推进这个任务；每条结论都要有真实工具输出作为证据。
+3. 结束前用黑板记录（命令行，命令说明见 muteki-board 技能）：
+   - 有证据的新结论：\`{{PYTHON}} {{BOARD}} fact "<标题>" "<本 Step 的增量结论>" --artifact <证据id>\`
+     证据 id 必须先用 \`board.py artifact list\` 查真实存在的 a 开头 id；伪造会被 exit 2 拒绝。
+   - 实测排除的方向：\`board.py deadend "<原因>" --tested "<测试范围>" --observed "<实际结果>"\`
+   - 候选 flag：\`board.py flag "<值>" --source "<来源>"\`
+   - 完成后：\`board.py task done ${task.id}\`
+4. 不写没有证据的"事实"；不确定的内容省略 --artifact（会记为 observation）。
+5. 提交完立即结束，不要续做别的任务。`);
+
+  /** 认领并派发一个任务；返回 activation 或 null（认领失败）。 */
+  const dispatchTask = async (task, parent, exec, cwd, args, contextText, challenge) => {
+    const claim = runBoard(["task", "claim", String(task.id), "--owner", parent.id], cwd);
+    if (claim.status !== 0) return null;
+    const activation = await ctx.get("subagents").startActivation({
+      provider: "spawn",
+      label: `tick-t${task.id}`,
+      prompt: [{ type: "text", text: workerPrompt(task, contextText, challenge) }],
+      parent,
+      signal: exec.signal,
+      delivery: "parent",
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(Object.keys(agentOptionsFor(args)).length
+        ? { agentOptions: agentOptionsFor(args) }
+        : {}),
+    });
+    recordRun(challenge);
+    return activation;
+  };
+
+  ctx.tools.register(defineTool({
+    name: "muteki_dispatch",
+    description:
+      "派发一个 Muteki 子代理执行一个有界 Step。可选先认领 lane（同一目标同时只允许一个执行者），" +
+      "并受每小时派单次数上限约束。子代理是全新上下文，不会继承当前会话历史；" +
+      "任务描述要自带背景、预期证据和停止边界。",
+    parameters: {
+      prompt: {
+        type: "string",
+        required: true,
+        description:
+          "交给子代理的完整任务：背景、要回答的问题、预期可观察证据、停止边界。" +
+          "子代理看不到当前会话，必须自包含。",
+      },
+      name: {
+        type: "string",
+        description: "子代理短名：小写字母/数字/连字符，最多 32 字符；省略时自动生成。",
+      },
+      lane: {
+        type: "string",
+        description: "可选：先认领的资源 lane（如 target-1.2.3.4:80、challenge-web-01）。认领失败则不派单。",
+      },
+      lane_ttl: {
+        type: "number",
+        description: "lane 认领的有效秒数，默认 900。",
+      },
+      provider: {
+        type: "string",
+        description: "子代理 LLM provider id（与 model 同时提供才生效）。",
+      },
+      model: {
+        type: "string",
+        description: "子代理 model id（与 provider 同时提供才生效）。",
+      },
+      reasoning_effort: {
+        type: "string",
+        description: "子代理思考强度 id（requires provider + model）。",
+      },
+      cwd: {
+        type: "string",
+        description: "子代理工作目录；也决定 board.py 使用哪个工作区级黑板。",
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", required: true, const: "activation" },
+          childId: { type: "string", required: true },
+          name: { type: "string", required: true },
+        },
+      },
+      render: (_args, value) => [
+        { type: "text", text: `已派发子代理 ${value.name}（${value.childId}）` },
+      ],
+    },
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const parent = exec.agent;
+      if (!parent) {
+        throw new Error("muteki_dispatch 需要一个调用者 agent（exec.agent 为空）");
+      }
+      const subagents = ctx.get("subagents");
+      if (!subagents) {
+        throw new Error("muteki_dispatch 需要 subagents 服务，但当前 scope 不可用");
+      }
+
+      const cwd = args.cwd || process.cwd();
+      const challenge = currentChallenge(cwd);
+
+      const recent = recentRuns(challenge);
+      if (recent.length >= config.maxRunsPerHour) {
+        throw new Error(
+          `muteki_dispatch 频率上限：本题（${challenge}）最近一小时已派发 ${recent.length} 次（上限 ${config.maxRunsPerHour}）。` +
+            "等窗口滚动，或先收束已有子代理；换一道新题不会继承本题额度。",
+        );
+      }
+
+      if (args.lane) {
+        if (!existsSync(config.boardPy)) {
+          throw new Error(`lane 认领失败：找不到 board.py（${config.boardPy}）`);
+        }
+        const claimed = spawnSync(
+          config.python,
+          [
+            config.boardPy,
+            "claim",
+            args.lane,
+            "--owner",
+            parent.id,
+            "--ttl",
+            String(args.lane_ttl ?? 900),
+            "--note",
+            (args.name || args.prompt.slice(0, 60)).replace(/\s+/g, " "),
+          ],
+          { cwd, encoding: "utf8", windowsHide: true },
+        );
+        if (claimed.status !== 0) {
+          const detail = `${claimed.stdout || ""}${claimed.stderr || ""}`.trim();
+          throw new Error(`lane 认领失败：${detail || `exit ${claimed.status}`}`);
+        }
+      }
+
+      const activation = await subagents.startActivation({
+        provider: "spawn",
+        label: args.name || "muteki-worker",
+        ...(args.name ? { name: args.name } : {}),
+        prompt: [{ type: "text", text: args.prompt }],
+        parent,
+        signal: exec.signal,
+        delivery: "parent",
+        ...(args.cwd ? { cwd: args.cwd } : {}),
+        ...(Object.keys(agentOptionsFor(args)).length
+          ? { agentOptions: agentOptionsFor(args) }
+          : {}),
+      });
+
+      recordRun(challenge);
+      return { kind: "activation", childId: activation.childId, name: activation.name };
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "muteki_tick",
+    description:
+      "驱动一轮 Muteki 调度：从黑板任务队列取最高优先级的 open 任务（最多 limit 个），" +
+      "原子认领后各派一个全新上下文的子代理执行，返回派单结果。子代理结束后会把结论写回黑板并把任务标 done。",
+    parameters: {
+      limit: {
+        type: "number",
+        description: "本轮最多派几个任务，1-3，默认 2。",
+      },
+      cwd: {
+        type: "string",
+        description: "黑板工作目录（决定用哪个工作区的 board.db），默认当前进程目录。",
+      },
+      provider: {
+        type: "string",
+        description: "子代理 LLM provider id（与 model 同时提供才生效）。",
+      },
+      model: {
+        type: "string",
+        description: "子代理 model id（与 provider 同时提供才生效）。",
+      },
+      reasoning_effort: {
+        type: "string",
+        description: "子代理思考强度 id（requires provider + model）。",
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", required: true, const: "tick" },
+          dispatched: {
+            type: "array",
+            required: true,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                taskId: { type: "number", required: true },
+                childId: { type: "string", required: true },
+                name: { type: "string", required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [
+        {
+          type: "text",
+          text: value.dispatched.length
+            ? `本轮派发 ${value.dispatched.length} 个任务：` +
+              value.dispatched.map((item) => `t${item.taskId}→${item.name}`).join("、")
+            : "任务队列里没有可派发的 open 任务。",
+        },
+      ],
+    },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const parent = exec.agent;
+      if (!parent) throw new Error("muteki_tick 需要一个调用者 agent（exec.agent 为空）");
+      const subagents = ctx.get("subagents");
+      if (!subagents) throw new Error("muteki_tick 需要 subagents 服务，但当前 scope 不可用");
+      const cwd = args.cwd || process.cwd();
+      const limit = Math.max(1, Math.min(3, args.limit ?? 2));
+      const tasks = openTasks(cwd).slice(0, limit);
+      if (tasks.length === 0) return { kind: "tick", dispatched: [] };
+
+      const context = runBoard(["context"], cwd);
+      const contextText = context.out.slice(0, 6000);
+      const challenge = currentChallenge(cwd);
+
+      const dispatched = [];
+      for (const task of tasks) {
+        if (recentRuns(challenge).length >= config.maxRunsPerHour) break;
+        const activation = await dispatchTask(task, parent, exec, cwd, args, contextText, challenge);
+        if (!activation) continue;
+        dispatched.push({
+          taskId: task.id,
+          childId: activation.childId,
+          name: activation.name,
+        });
+      }
+      return { kind: "tick", dispatched };
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "muteki_run",
+    description:
+      "自动循环驱动 Muteki 蜂群：反复从任务队列认领 open 任务并派子代理，等这一批完成后检查黑板，" +
+      "队列空、出现 flag、超时或达到派单上限就停止。适合「给一批任务，自己跑到出结果」。",
+    parameters: {
+      challenge: {
+        type: "string",
+        description:
+          "本轮题名（如 web-19542）。开工前会执行 board.py use 切到这道题，" +
+          "旧题的 fact/deadend/task/flag 全部不可见，不会污染本轮首解判定。" +
+          "省略时自动生成 run-<时间戳>。",
+      },
+      max_minutes: {
+        type: "number",
+        description: "最长运行分钟数，默认 20，上限 120。",
+      },
+      max_rounds: {
+        type: "number",
+        description: "最多轮数，默认 10，上限 50。",
+      },
+      limit: {
+        type: "number",
+        description: "每轮最多并行派几个子代理，1-3，默认 2。",
+      },
+      cwd: {
+        type: "string",
+        description: "黑板工作目录（决定用哪个工作区的 board.db），默认当前进程目录。",
+      },
+      provider: {
+        type: "string",
+        description: "子代理 LLM provider id（与 model 同时提供才生效）。",
+      },
+      model: {
+        type: "string",
+        description: "子代理 model id（与 provider 同时提供才生效）。",
+      },
+      reasoning_effort: {
+        type: "string",
+        description: "子代理思考强度 id（requires provider + model）。",
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", required: true, const: "run" },
+          challenge: { type: "string", required: true },
+          rounds: { type: "number", required: true },
+          dispatched: {
+            type: "array",
+            required: true,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                taskId: { type: "number", required: true },
+                childId: { type: "string", required: true },
+                name: { type: "string", required: true },
+              },
+            },
+          },
+          flags: {
+            type: "array",
+            required: true,
+            items: { type: "string" },
+          },
+          stoppedReason: { type: "string", required: true },
+        },
+      },
+      render: (_args, value) => [
+        {
+          type: "text",
+          text:
+            `muteki_run 结束（题 ${value.challenge}，${value.stoppedReason}）：${value.rounds} 轮，` +
+            `派发 ${value.dispatched.length} 个子代理` +
+            (value.flags.length ? `，本轮新 flag：${value.flags.join(", ")}` : ""),
+        },
+      ],
+    },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const parent = exec.agent;
+      if (!parent) throw new Error("muteki_run 需要一个调用者 agent（exec.agent 为空）");
+      const subagents = ctx.get("subagents");
+      if (!subagents) throw new Error("muteki_run 需要 subagents 服务，但当前 scope 不可用");
+      const cwd = args.cwd || process.cwd();
+      const limit = Math.max(1, Math.min(3, args.limit ?? 2));
+      const maxRounds = Math.max(1, Math.min(50, args.max_rounds ?? 10));
+      const maxMs = Math.max(1, Math.min(120, args.max_minutes ?? 20)) * 60_000;
+      const started = Date.now();
+
+      // 按题隔离：开工前切到本轮题名，旧题数据全部不可见；
+      // 再快照现有 flag 作为 baseline，只有本轮新出现的 flag 才算首解。
+      const challenge =
+        String(args.challenge || "").trim() ||
+        `run-${new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15)}`;
+      const used = runBoard(["use", challenge], cwd);
+      if (used.status !== 0) {
+        throw new Error(`切换题名 ${challenge} 失败：${used.out.slice(0, 200)}`);
+      }
+      const baseline = new Set(knownFlags(cwd).map(flagValue));
+      const freshFlags = () =>
+        knownFlags(cwd).filter((flag) => !baseline.has(flagValue(flag)));
+
+      const dispatched = [];
+      let rounds = 0;
+      let stoppedReason = "empty";
+
+      // 开工前回收「上一个会话中断后卡在 claimed」的任务，否则队列会一直是空的。
+      try {
+        runBoard(["task", "reclaim", "--minutes", "30"], cwd);
+      } catch {
+        /* 没有卡住的任务时这条命令只打印提示，不影响派单 */
+      }
+
+      try {
+        while (rounds < maxRounds) {
+        if (Date.now() - started > maxMs) {
+          stoppedReason = "timeout";
+          break;
+        }
+        if (recentRuns(challenge).length >= config.maxRunsPerHour || costBudgetLeft(challenge) <= 0) {
+          stoppedReason = "budget";
+          break;
+        }
+        const tasks = openTasks(cwd).slice(0, limit);
+        if (tasks.length === 0) {
+          stoppedReason = "empty";
+          break;
+        }
+
+        rounds += 1;
+        const context = runBoard(["context"], cwd);
+        const contextText = context.out.slice(0, 6000);
+        const batch = [];
+        for (const task of tasks) {
+          if (recentRuns(challenge).length >= config.maxRunsPerHour || costBudgetLeft(challenge) <= 0) break;
+          const activation = await dispatchTask(
+            task,
+            parent,
+            exec,
+            cwd,
+            args,
+            contextText,
+            challenge,
+          );
+          if (!activation) continue;
+          batch.push({ task, activation });
+          dispatched.push({
+            taskId: task.id,
+            childId: activation.childId,
+            name: activation.name,
+          });
+        }
+        if (batch.length === 0) {
+          stoppedReason = "empty";
+          break;
+        }
+
+        // 等这一批：正常完成，或任一子代理写回 flag 后立即中断其余（首解硬 cancel）。
+        let batchDone = false;
+        const resultsPromise = Promise.allSettled(batch.map((item) => item.activation.result)).then(() => {
+          batchDone = true;
+        });
+        const flagPromise = (async () => {
+          while (!batchDone) {
+            await sleep(2000);
+            if (freshFlags().length > 0) return true;
+          }
+          return freshFlags().length > 0;
+        })();
+        const winner = await Promise.race([
+          resultsPromise.then(() => "done"),
+          flagPromise.then((hit) => (hit ? "flag" : "done")),
+        ]);
+        if (winner === "flag") {
+          if (config.hardCancelOnFlag !== false) {
+            for (const item of batch) {
+              try {
+                subagents.interrupt(item.activation.childId, { kind: "ancestor", agent: parent });
+              } catch {
+                /* 已完成或已释放的子代理：中断是可接受的 no-op */
+              }
+            }
+          }
+          stoppedReason = "flag";
+          break;
+        }
+
+        const flags = freshFlags();
+        if (flags.length > 0) {
+          stoppedReason = "flag";
+          break;
+        }
+        if (Date.now() - started > maxMs) {
+          stoppedReason = "timeout";
+          break;
+        }
+        if (recentRuns(challenge).length >= config.maxRunsPerHour || costBudgetLeft(challenge) <= 0) {
+          stoppedReason = "budget";
+          break;
+        }
+        await sleep(500);
+      }
+
+      if (rounds >= maxRounds && stoppedReason === "empty") {
+        const tasks = openTasks(cwd);
+        if (tasks.length > 0) stoppedReason = "rounds";
+      }
+
+      return {
+        kind: "run",
+        challenge,
+        rounds,
+        dispatched,
+        flags: freshFlags().map(flagValue),
+        stoppedReason,
+      };
+      } finally {
+        // 无论正常结束、超时还是被用户中断，都把本轮「派出但没做完」的任务
+        // 释放回 open，避免任务卡死在 claimed 让下一轮 muteki_run 取到空队列。
+        for (const item of dispatched) {
+          try {
+            runBoard(["task", "reopen", String(item.taskId)], cwd);
+          } catch {
+            /* 已完成（done）的任务 reopen 会失败，属正常 */
+          }
+        }
+      }
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "muteki_review",
+    description:
+      "起一个只读 Reviewer 子代理审当前黑板：质疑没有证据的结论、指出重复、找验证缺口，" +
+      "并把意见写回黑板（review add）。它不碰目标、不执行攻击命令；审完返回本次新增意见。",
+    parameters: {
+      cwd: {
+        type: "string",
+        description: "黑板工作目录（决定审哪个工作区），默认当前进程目录。",
+      },
+      focus: {
+        type: "string",
+        description: "可选：本次重点审什么，例如「只看 web 链路的事实是否真有证据」。",
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", required: true, const: "review" },
+          childId: { type: "string", required: true },
+          name: { type: "string", required: true },
+          created: {
+            type: "array",
+            required: true,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "number", required: true },
+                kind: { type: "string", required: true },
+                note: { type: "string", required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [
+        {
+          type: "text",
+          text: value.created.length
+            ? `Reviewer 写了 ${value.created.length} 条意见：` +
+              value.created.map((item) => `r${item.id}[${item.kind}]`).join("、")
+            : "Reviewer 没有发现需要记录的问题。",
+        },
+      ],
+    },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const parent = exec.agent;
+      if (!parent) {
+        throw new Error("muteki_review 需要一个调用者 agent（exec.agent 为空）");
+      }
+      const subagents = ctx.get("subagents");
+      if (!subagents) {
+        throw new Error("muteki_review 需要 subagents 服务，但当前 scope 不可用");
+      }
+      const cwd = args.cwd || process.cwd();
+      const before = new Set(openReviewIds(cwd));
+      const board = runBoard(["context"], cwd);
+      const boardText = board.out.slice(0, 8000);
+      const challenge = boardJson(cwd)?.challenge || currentChallenge(cwd);
+      const focus = args.focus ? `4. 本次重点：${args.focus}\n` : "";
+
+      const prompt = fillCmd(`你是 Muteki 蜂群的 Reviewer（只读审图者）。
+你只审黑板上的结论，不接触目标、不执行攻击命令、不修改黑板以外的任何东西。
+
+当前题：${challenge}（黑板已按题隔离；只审这道题，不要引入旧题的结论）
+
+## 当前黑板
+${boardText}
+
+## 你的职责
+1. 质疑证据不足：observation 被当结论用、fact 的证据与内容对不上、来源不明。
+2. 指出重复：同一结论换了措辞写了两遍（指出 target）。
+3. 找验证缺口：哪些结论只是猜测、哪些方向没被测过、哪些 flag 候选没验证。
+${focus}
+## 输出方式（必须用命令行写回黑板，不能只写在回复里）
+每条意见一条命令：
+{{PYTHON}} {{BOARD}} review add --kind challenge --target f3 --note "<具体质疑>"
+{{PYTHON}} {{BOARD}} review add --kind merge --target f5 --note "<与 f4 重复>"
+{{PYTHON}} {{BOARD}} review add --kind gap --note "<缺什么验证>"
+最多 6 条；没有问题就不要写。完成后回复一句：写了 N 条复核意见。`);
+
+      const activation = await subagents.startActivation({
+        provider: "spawn",
+        label: "review",
+        prompt: [{ type: "text", text: prompt }],
+        parent,
+        signal: exec.signal,
+        delivery: "parent",
+        cwd,
+      });
+
+      try {
+        await activation.result;
+      } catch {
+        /* 审图失败也要把已经写进去的意见带回来 */
+      }
+
+      const created = openReviewIds(cwd)
+        .filter((id) => !before.has(id))
+        .map((id) => {
+          const row = reviewRow(cwd, id);
+          return { id, kind: row?.kind || "gap", note: row?.note || "" };
+        });
+
+      return { kind: "review", childId: activation.childId, name: activation.name, created };
+    },
+  }));
+
+  // ── muteki_cli：用本地 Claude Code CLI 跑一个异构 Step ────────────────────
+  ctx.tools.register(defineTool({
+    name: "muteki_cli",
+    description:
+      "用本地 Claude Code CLI（独立 config-worker 配置、DeepSeek 后端、无插件无记忆）跑一个自包含 Step，" +
+      "返回它的最终输出与本次花费。用于与 DSH 子代理做异构竞速：同一道题让不同引擎各打一遍，" +
+      "结论仍写回同一块黑板。注意它是独立进程，不占 subagents 席位。",
+    parameters: {
+      prompt: {
+        type: "string",
+        required: true,
+        description:
+          "完整自包含的任务。必须告诉它：先用 board.py context 读黑板、只推进这一条、" +
+          "结论用 board.py fact --artifact 写回、结束后 task done。",
+      },
+      cwd: { type: "string", description: "工作目录（决定黑板库与附件位置），默认当前目录。" },
+      timeout_minutes: {
+        type: "number",
+        description: "超时分钟数，默认 5，范围 1-30。",
+      },
+      model: { type: "string", description: "可选：传给 claude 的模型 id，默认由 config-worker 决定（deepseek-flash）。" },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", required: true, const: "cli" },
+          exitCode: { type: "number", required: true },
+          result: { type: "string", required: true },
+          costUsd: { type: "number", required: true },
+          stopped: { type: "string", required: true },
+          ms: { type: "number", required: true },
+        },
+      },
+      render: (_args, value) => [
+        {
+          type: "text",
+          text: [
+            `muteki_cli 结束（已调用 Claude Code CLI）：exit ${value.exitCode}，花费 $${value.costUsd.toFixed(4)}，状态 ${value.stopped}，耗时 ${value.ms}ms。`,
+            value.result ? `输出：\n${value.result.slice(0, 400)}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        },
+      ],
+    },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const cwd = args.cwd || process.cwd();
+      const challenge = currentChallenge(cwd);
+      const budgetLeft = costBudgetLeft(challenge);
+      if (budgetLeft <= 0) {
+        throw new Error(
+          `muteki_cli 成本预算已用尽：本题（${challenge}）最近一小时 $${totalCost(challenge).toFixed(2)} / 上限 $${config.maxCostUsdPerHour}`,
+        );
+      }
+      if (!existsSync(config.claudeBin)) {
+        throw new Error(`找不到 Claude Code CLI：${config.claudeBin}`);
+      }
+      const timeoutMs = Math.max(1, Math.min(30, args.timeout_minutes ?? 5)) * 60_000;
+      const prompt = String(args.prompt || "").slice(0, 24_000);
+      const argv = ["-p", prompt, "--output-format", "json"];
+      if (args.model) argv.push("--model", String(args.model));
+
+      const startedAt = Date.now();
+      // 必须异步执行：spawnSync 会同步阻塞整个 DSH 主进程（Electron 单线程），
+      // 上一版在 CLI 长时间不返回时表现为 UI 卡死、看不到结果、最终被强制重启。
+      const run = await new Promise((resolve) => {
+        execFile(
+          config.claudeBin,
+          argv,
+          {
+            cwd,
+            encoding: "utf8",
+            timeout: timeoutMs,
+            windowsHide: true,
+            maxBuffer: 32 * 1024 * 1024,
+            killSignal: "SIGKILL",
+            env: { ...process.env, CLAUDE_CONFIG_DIR: config.claudeConfigDir, NO_COLOR: "1" },
+          },
+          (error, stdout, stderr) => {
+            resolve({
+              error,
+              stdout,
+              stderr,
+              status: error ? (typeof error.code === "number" ? error.code : 1) : 0,
+            });
+          },
+        );
+      });
+
+      if (
+        run.error &&
+        run.error.code !== "ETIMEDOUT" &&
+        run.error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+      ) {
+        throw new Error(`claude 启动失败：${run.error.message}`);
+      }
+
+      const stdout = `${run.stdout || ""}`.trim();
+      const stderr = `${run.stderr || ""}`.trim();
+      let parsed = null;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        parsed = null;
+      }
+      const text = String(parsed?.result ?? parsed?.content ?? stdout ?? "").trim();
+      const costUsd = Number(parsed?.total_cost_usd ?? parsed?.cost_usd ?? 0) || 0;
+      const timedOut = Boolean(run.error && (run.error.killed || run.error.code === "ETIMEDOUT"));
+      const stopped = timedOut ? "timeout" : run.status === 0 ? "completed" : "error";
+      recordCost(costUsd, "claude-cli", challenge);
+      recordRun(challenge);
+      try {
+        mkdirSync(config.storageDir, { recursive: true });
+        appendFileSync(
+          join(config.storageDir, "cli.jsonl"),
+          JSON.stringify({
+            ts: Date.now(),
+            ms: Date.now() - startedAt,
+            exitCode: typeof run.status === "number" ? run.status : 1,
+            costUsd,
+            stopped,
+            prompt: prompt.slice(0, 120),
+          }) + "\n",
+        );
+      } catch {
+        // 日志写失败不影响主结果
+      }
+
+      if (stopped === "error" && !text && stderr) {
+        throw new Error(`claude 执行失败（exit ${run.status}）：${stderr.slice(0, 1500)}`);
+      }
+
+      return {
+        kind: "cli",
+        exitCode: typeof run.status === "number" ? run.status : 1,
+        result: text.slice(0, 4000),
+        costUsd,
+        stopped,
+        ms: Date.now() - startedAt,
+      };
+    },
+  }));
+}

@@ -1,0 +1,22 @@
+# 运行期数据，别提交
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.log
+runs.json
+costs.json
+preset-muteki.generated.yml
+
+# Python
+__pycache__/
+*.pyc
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 依赖（本项目不需要 node_modules，但防止误提交）
+node_modules/

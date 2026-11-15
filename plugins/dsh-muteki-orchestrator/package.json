@@ -1,0 +1,10 @@
+{
+  "name": "@local/dsh-muteki-orchestrator",
+  "private": true,
+  "exports": {
+    ".": "./plugin-v13.mjs"
+  },
+  "main": "./plugin-v13.mjs",
+  "version": "1.0.12",
+  "type": "module"
+}
