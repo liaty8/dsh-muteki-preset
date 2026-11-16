@@ -52,7 +52,7 @@ if ((Test-Path $patchPath) -and (Select-String -Path $patchPath -Pattern "id: pr
 New-Item -ItemType Directory -Force $boardDir | Out-Null
 Copy-Item (Join-Path $root "board\board.py") $boardPy -Force
 $skill = Get-Content (Join-Path $root "board\SKILL.md") -Raw
-$skill = $skill.Replace("{{PYTHON}}", $Python).Replace("{{BOARD}}", $boardPy).Replace("{{STORAGE}}", $StorageDir)
+$skill = $skill.Replace("{{PYTHON}}", $Python).Replace("{{BOARD_PY}}", $boardPy).Replace("{{STORAGE_DIR}}", $StorageDir)
 Set-Content -Path (Join-Path $boardDir "SKILL.md") -Value $skill -Encoding UTF8
 Write-Host "[1/4] 黑板已安装：$boardDir"
 

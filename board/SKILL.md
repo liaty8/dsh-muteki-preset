@@ -25,7 +25,7 @@ DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工�
 - 不带 `--artifact` → 记为 observation，`context` 会把它单独列在「未证实观察」，提醒不要当结论；
 - 一个结论可以挂多个 `--artifact`（重复传参或空格/逗号分隔）。
 
-证据库默认在 `{{STORAGE}}\index.jsonl`（可用 `MUTEKI_ARTIFACT_DIR` 覆盖，必须与插件配置一致）。
+证据库默认在 `{{STORAGE_DIR}}\index.jsonl`（可用 `MUTEKI_ARTIFACT_DIR` 覆盖，必须与插件配置一致）。
 
 ## 资源认领
 
@@ -51,10 +51,10 @@ DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工�
 `task` 是主控与子代理之间的待办队列：主控用 `task add` 建任务，`muteki_tick` 或子代理用 `task claim` 原子认领，完成后 `task done`。
 
 ```powershell
-{{PYTHON}} {{BOARD}} task add "复现登录注入" --detail "背景 + 预期证据 + 停止边界" --priority 3
-{{PYTHON}} {{BOARD}} task list --status open
-{{PYTHON}} {{BOARD}} task claim 1 --owner worker-a
-{{PYTHON}} {{BOARD}} task done 1
+{{PYTHON}} {{BOARD_PY}} task add "复现登录注入" --detail "背景 + 预期证据 + 停止边界" --priority 3
+{{PYTHON}} {{BOARD_PY}} task list --status open
+{{PYTHON}} {{BOARD_PY}} task claim 1 --owner worker-a
+{{PYTHON}} {{BOARD_PY}} task done 1
 ```
 
 priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢不到直接报错，不要重试同一任务。
@@ -82,67 +82,67 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 参数：`prompt`（必填）、`name`、`lane`（先认领资源，认领失败就不派单）、`lane_ttl`、`provider`/`model`/`reasoning_effort`（指定不同模型做异构竞速）、`cwd`（决定用哪个工作区黑板）。
 
-默认每小时最多派 6 次，防止无人值守时烧预算。子代理的启动/结束会记到 `{{STORAGE}}\subagents.jsonl`。
+默认每小时最多派 **12** 次（orchestrator 的 `maxRunsPerHour`，**按题独立**），防止无人值守时烧预算。子代理的启动/结束会记到 `{{STORAGE_DIR}}\subagents.jsonl`。
 
 成本上限按题独立：`muteki_cli` 每次调用会把 Claude Code 上报的 `total_cost_usd` 记进 `costs.json`；**本题**最近一小时累计超过 `maxCostUsdPerHour`（默认 3 美元）后，`muteki_cli` 与 `muteki_run` 都以 `budget` 停止派单。换新题不继承旧题成本，新题从 $0 开始；某题花超就先放下（`task drop`），把预算留给别的题。注意这是 Claude Code 按 Anthropic 标价估算的金额，接 DeepSeek 时实际账单更低。
 
 ## 命令
 
-脚本路径固定：`{{BOARD}}`
+脚本路径固定：`{{BOARD_PY}}`
 
 ```powershell
 # 开工先读：flag、已证实事实、未证实观察、进行中的认领、已排除方向、任务队列、待处理复核
-{{PYTHON}} {{BOARD}} context
+{{PYTHON}} {{BOARD_PY}} context
 
 # 切题 / 看当前题（按题隔离：上一题的记录默认不可见；--all 才跨题）
-{{PYTHON}} {{BOARD}} use web-8080
-{{PYTHON}} {{BOARD}} current
-{{PYTHON}} {{BOARD}} context --all
+{{PYTHON}} {{BOARD_PY}} use web-8080
+{{PYTHON}} {{BOARD_PY}} current
+{{PYTHON}} {{BOARD_PY}} context --all
 
-# 认领资源（默认 600 秒；--ttl 调时长）
-{{PYTHON}} {{BOARD}} claim web-login --ttl 900 --note "SQL 注入验证"
-{{PYTHON}} {{BOARD}} release web-login
-{{PYTHON}} {{BOARD}} lanes
+# 认领资源（手动 claim 默认 600 秒；muteki_dispatch 的 lane_ttl 默认 900 秒；--ttl 调时长）
+{{PYTHON}} {{BOARD_PY}} claim web-login --ttl 900 --note "SQL 注入验证"
+{{PYTHON}} {{BOARD_PY}} release web-login
+{{PYTHON}} {{BOARD_PY}} lanes
 
 # 任务队列：建待办 / 认领 / 完成
-{{PYTHON}} {{BOARD}} task add "复现登录注入" --detail "预期证据 + 停止边界" --priority 3
-{{PYTHON}} {{BOARD}} task list --status open
-{{PYTHON}} {{BOARD}} task claim 1 --owner worker-a
-{{PYTHON}} {{BOARD}} task done 1
+{{PYTHON}} {{BOARD_PY}} task add "复现登录注入" --detail "预期证据 + 停止边界" --priority 3
+{{PYTHON}} {{BOARD_PY}} task list --status open
+{{PYTHON}} {{BOARD_PY}} task claim 1 --owner worker-a
+{{PYTHON}} {{BOARD_PY}} task done 1
 
 # 查最近捕获的工具证据（拿 --artifact 要用的 id）
-{{PYTHON}} {{BOARD}} artifact list --limit 20
-{{PYTHON}} {{BOARD}} artifact show a1x2y3z4-8f2a
+{{PYTHON}} {{BOARD_PY}} artifact list --limit 20
+{{PYTHON}} {{BOARD_PY}} artifact show a1x2y3z4-8f2a
 
 # 复核意见（Reviewer 写回；查看 / 关闭）
-{{PYTHON}} {{BOARD}} review add --kind gap --note "缺什么验证" --target f3
-{{PYTHON}} {{BOARD}} review list --status open
-{{PYTHON}} {{BOARD}} review resolve 1
+{{PYTHON}} {{BOARD_PY}} review add --kind gap --note "缺什么验证" --target f3
+{{PYTHON}} {{BOARD_PY}} review list --status open
+{{PYTHON}} {{BOARD_PY}} review resolve 1
 
 # 记一条带证据的事实（只写本步增量，不复述已知内容）
-{{PYTHON}} {{BOARD}} fact "标题一句话" "增量结论 + 适用范围" --artifact a1x2y3z4-8f2a --evidence "补充说明（可选）"
+{{PYTHON}} {{BOARD_PY}} fact "标题一句话" "增量结论 + 适用范围" --artifact a1x2y3z4-8f2a --evidence "补充说明（可选）"
 
 # 还没证实的推测：不带 --artifact，会记为 observation
-{{PYTHON}} {{BOARD}} fact "待验证" "目前只看到 X，不能确认 Y"
+{{PYTHON}} {{BOARD_PY}} fact "待验证" "目前只看到 X，不能确认 Y"
 
 # 推翻旧事实时
-{{PYTHON}} {{BOARD}} fact "标题" "新结论与修正依据" --artifact aXXXX --supersedes 3
+{{PYTHON}} {{BOARD_PY}} fact "标题" "新结论与修正依据" --artifact aXXXX --supersedes 3
 
 # 记死路：被测方向 + 范围 + 实际观察（三者缺一不可）
-{{PYTHON}} {{BOARD}} deadend "为什么排除" --tested "测了什么、什么范围" --observed "实际看到什么" --artifact aXXXX
+{{PYTHON}} {{BOARD_PY}} deadend "为什么排除" --tested "测了什么、什么范围" --observed "实际看到什么" --artifact aXXXX
 
 # 拿到 flag 立刻记，保留原始值，并绑定真实回显的证据 id
-{{PYTHON}} {{BOARD}} flag "flag{...}" --source "从哪个响应/文件来的" --artifact aXXXX
+{{PYTHON}} {{BOARD_PY}} flag "flag{...}" --source "从哪个响应/文件来的" --artifact aXXXX
 
 # flag 验证状态机：candidate（候选）→ submitted（已提交）→ accepted / rejected（平台判定）
-{{PYTHON}} {{BOARD}} flagstatus 1 --set submitted
-{{PYTHON}} {{BOARD}} flagstatus 1 --set accepted --verified-by "平台回显 correct"
-{{PYTHON}} {{BOARD}} flagstatus 1 --set rejected --note "平台判错，回到证据复核"
+{{PYTHON}} {{BOARD_PY}} flagstatus 1 --set submitted
+{{PYTHON}} {{BOARD_PY}} flagstatus 1 --set accepted --verified-by "平台回显 correct"
+{{PYTHON}} {{BOARD_PY}} flagstatus 1 --set rejected --note "平台判错，回到证据复核"
 
 # 检索 / 细读 / 统计
-{{PYTHON}} {{BOARD}} search "关键词"
-{{PYTHON}} {{BOARD}} read f3
-{{PYTHON}} {{BOARD}} stats
+{{PYTHON}} {{BOARD_PY}} search "关键词"
+{{PYTHON}} {{BOARD_PY}} read f3
+{{PYTHON}} {{BOARD_PY}} stats
 ```
 
 `search` 覆盖 fact / deadend / flag / **task / review**（按题隔离，`--all` 跨题）。

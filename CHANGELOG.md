@@ -8,6 +8,58 @@
 
 ---
 
+## [1.1.1] - 2026-11-16
+
+对应路线图条目 **A5：文档与配置默认值不一致 + 安装占位符两套命名**。
+
+### Fixed
+
+- **`board/SKILL.md` 派单上限写错**：原文「默认每小时最多派 **6** 次」，
+  而 orchestrator `maxRunsPerHour` 默认是 **12**、preset 也设 12。改为 12 并注明按题独立。
+  用户按旧文档预期会在第 7 次派单时被意外熔断。
+- **lane TTL 双默认值未说明**：手动 `board.py claim` 默认 **600s**，
+  而 `muteki_dispatch` 的 `lane_ttl` 默认 **900s**。两者都保留（不改行为），
+  在 SKILL.md 命令注释里写清区别，避免误以为同一个默认值。
+
+### Changed
+
+- **安装占位符统一为一套命名**：`{{PYTHON}}` / `{{BOARD_PY}}` / `{{STORAGE_DIR}}` /
+  `{{CLAUDE_BIN}}` / `{{CLAUDE_CONFIG_DIR}}`。
+  `board/SKILL.md` 原用的 `{{BOARD}}`（32 处）与 `{{STORAGE}}`（2 处）全部改名，
+  `install.ps1` 的替换逻辑同步更新。此前两套命名容易漏替换。
+- `README.md` 占位符表补充说明：**安装时占位符**（由 `install.ps1` 替换）与
+  **插件运行时占位符**（orchestrator 内部 worker/reviewer prompt 里的 `{{PYTHON}}/{{BOARD}}/{{STORAGE}}`，
+  由 `fillCmd()` 从配置填充）是两套独立机制，后者不需要手工替换。
+- 版本号同步到 `1.1.1`。
+
+### Added
+
+- **`tests/test_install.py`：4 个安装冒烟用例**（需要 pwsh，找不到自动 skip）：
+  - 安装后 SKILL.md 与 cordis.patch.yml **零残留占位符**，且自定义 `-StorageDir` 时
+    preset 的 `storageDir` 与 muteki-core 的 `artifactDir` 一致；
+  - board.py / SKILL.md / 两个插件都复制到正确位置；
+  - 不加 `-Force` 重复安装会失败（已安装检测生效）；
+  - `-Apply` 会生成 `cordis.patch.yml.bak-*` 备份。
+  测试在临时假 DSH_HOME 上跑，不触碰真实安装；结束后清理仓库根的生成片段。
+
+### Migration
+
+- 无需迁移，不涉及 schema 与运行时行为。
+- **重新安装即可**：`install.ps1` 会用新占位符生成 SKILL.md。
+  已安装且 SKILL.md 早已替换成绝对路径的用户不受影响。
+- 若你手工维护 SKILL.md 模板，请把 `{{BOARD}}` → `{{BOARD_PY}}`、`{{STORAGE}}` → `{{STORAGE_DIR}}`。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 68 tests ... OK（含 4 个安装冒烟）
+python scripts/check_sensitive.py         # rc=0
+```
+
+[1.1.1]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.1.1
+
+---
+
 ## [1.1.0] - 2026-11-16
 
 对应路线图条目 **A4：flag 没有证据字段、没有验证状态**。这是 schema 变更 + 新能力，按语义化版本升 minor。

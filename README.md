@@ -303,6 +303,13 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 | `{{CLAUDE_BIN}}` | `claude` 可执行文件（用不上 `muteki_cli` 可随便填） |
 | `{{CLAUDE_CONFIG_DIR}}` | Claude Code 的独立配置目录（同上） |
 
+这五个占位符由 `install.ps1` 在**安装时**替换，`preset-muteki.patch.yml` 与 `board/SKILL.md`
+共用同一套命名（历史上 SKILL.md 曾用 `{{BOARD}}` / `{{STORAGE}}`，自 1.1.1 起统一）。
+
+> **不要混淆**：`muteki-orchestrator` 内部 worker / reviewer prompt 里也有 `{{PYTHON}}` / `{{BOARD}}` / `{{STORAGE}}`，
+> 那是**运行时**由插件的 `fillCmd()` 从配置（`python` / `boardPy` / `storageDir`）填充的，
+> 与安装占位符是两套独立机制，**不需要手工替换**，也不会被 `install.ps1` 处理。
+
 ---
 
 ## 使用
