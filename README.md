@@ -58,7 +58,7 @@
 
 ```text
 # Web
-目标 http://1.2.3.4:8080，flag{wctf{...}}。先 board.py use web-8080，
+目标 http://1.2.3.4:8080，flag{...}。先 board.py use web-8080，
 把它拆成入口探测 / 认证绕过 / 注入验证三条有界 Step，再 muteki_run limit 2 max_minutes 15。
 
 # Pwn
@@ -204,7 +204,7 @@
 `board.py use <题名>` 切换当前题；所有读写命令默认只作用于当前题：
 
 ```bash
-board.py use web-19542     # 切到这道题
+board.py use web-8080     # 切到这道题
 board.py current           # 看当前题
 board.py context --all     # 跨题审计
 ```
@@ -297,7 +297,7 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 
 | 占位符 | 填什么 |
 |---|---|
-| `{{PYTHON}}` | 你的 python 可执行文件，例如 `python` 或 `C:\Python312\python.exe` |
+| `{{PYTHON}}` | 你的 python 可执行文件，例如 `python` 或 `<Python 安装目录>\python.exe` |
 | `{{BOARD_PY}}` | `board.py` 的绝对路径 |
 | `{{STORAGE_DIR}}` | 证据库目录，例如 `%USERPROFILE%\.dsh-muteki\artifacts` |
 | `{{CLAUDE_BIN}}` | `claude` 可执行文件（用不上 `muteki_cli` 可随便填） |
@@ -344,6 +344,7 @@ board.py stats
 ```
 dsh-muteki-preset/
 ├─ install.ps1                     # Windows 一键安装
+├─ CHANGELOG.md                    # 变更记录（一个问题一个 release）
 ├─ preset/
 │  └─ preset-muteki.patch.yml      # 预设定义（含占位符）
 ├─ plugins/
@@ -357,6 +358,12 @@ dsh-muteki-preset/
 ├─ board/
 │  ├─ board.py                     # 黑板（SQLite，标准库）
 │  └─ SKILL.md                     # 给 agent 用的黑板操作手册
+├─ scripts/
+│  ├─ check_sensitive.py           # 发布前敏感信息门禁（标准库）
+│  └─ sensitive.local.txt          # 本地黑名单（.gitignore 排除，不提交）
+├─ tests/
+│  ├─ test_board.py                # 黑板回归（子进程方式）
+│  └─ test_check_sensitive.py      # 门禁回归（含误报防护）
 └─ assets/icon.png
 ```
 
@@ -393,9 +400,53 @@ dsh-muteki-preset/
 
 ---
 
+## 发布前检查（敏感信息门禁）
+
+这是一个公开的 CTF 作战预设，**任何真实作战数据都不能进仓库**：本机绝对路径、靶机 IP、flag 值、
+证据 id、会话 UUID、webhook 回连地址、cookie/token、个人邮箱。为此仓库自带一个标准库门禁脚本。
+
+```bash
+# 提交前：扫描全部已跟踪文件
+python scripts/check_sensitive.py
+
+# 只扫描本次要提交的内容（取 git 索引里的版本）
+python scripts/check_sensitive.py --staged
+
+# CI / 机器可读
+python scripts/check_sensitive.py --json
+```
+
+退出码：`0` 干净、`1` 发现疑似敏感信息、`2` 用法/环境错误。**发现即阻止发布**，先改成占位符或合成示例。
+
+规则覆盖：盘符绝对路径、用户目录路径、IPv4、flag 形态的值、UUID、muteki-core 证据 id、JWT、私钥头、
+webhook 地址、长 hex/base64、已知 token 前缀（`ghp_`/`sk-`/`AKIA` 等）、邮箱、机器用户名、凭据字面值。
+输出只打印**掩码后**的片段（`abc***gh(len=8)`），不会把完整敏感值回显到终端或 CI 日志。
+
+**本地黑名单**：把你自己的真实靶机 IP、题名、证据 id 前缀、机器用户名写进 `scripts/sensitive.local.txt`
+（每行一个字面量）。该文件已被 `.gitignore` 排除，**不会提交**，但门禁会用它扫描仓库内容。
+
+**误报处理**：只豁免明显是合成示例的值（`127.0.0.1`、`1.2.3.4`、`flag{test}`、`a1x2y3z4-8f2a`、
+`users.noreply.github.com` 等），真实值一律不豁免。代码里的 f-string 占位符（`NULL{cond}`、`task_{status}`）
+与包名/URL 已做误报防护，见 `tests/test_check_sensitive.py`。
+
+运行期数据（`*.db`、`*.jsonl`、`runs.json`、`costs.json`、`preset-muteki.generated.yml`）已在 `.gitignore` 中。
+**不要把 `artifacts/` 目录或黑板库贴进 issue / discussion**——里面可能含 cookie、token、靶机 IP 与 flag。
+
+### 测试
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+全部用标准库 `unittest`，无需 pytest。黑板用例以**子进程**方式执行 `board.py`，
+因为「写操作后未提交」这类缺陷只在进程退出时暴露。
+
+---
+
 ## 边界与安全
 
 - **不提供隔离**：Worker 会执行真实命令、访问目标服务。只在你拥有或明确获授权的题目与靶机上使用；不要跑不可信的恶意 challenge。
+- **运行期数据含敏感信息**：证据文件与黑板库会记录真实目标、cookie、token 与 flag。它们已被 `.gitignore` 排除；发布前务必跑 `python scripts/check_sensitive.py`（见上一节）。
 - **Reviewer 只读**：`muteki_review` 只读黑板、不碰目标。
 - **没有平台提交闭环**：flag 仍需要你手动复制到 CTF 平台；这是刻意留给人确认的一步。
 - **额度不是硬沙箱**：`$3/h` 是估算上限（Claude Code 按 Anthropic 价估算，接 DeepSeek 后端时实际更低），不是账单保证。

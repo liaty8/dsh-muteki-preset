@@ -8,7 +8,7 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
   - 每条记录带 challenge 维度，默认只读写 meta.current_challenge 指向的题。
   - `board.py use <题名>` 切题；`board.py current` 查看当前题。
   - `--all` 让 context / task list / review list / stats / search 跨题查看。
-  - 新开一题前先 use 一个干净的名字（如 web-19542），旧题的 fact / deadend /
+  - 新开一题前先 use 一个干净的名字（如 web-8080），旧题的 fact / deadend /
     task / flag / lane 就不会再被 muteki_run 当成当前题的证据或首解。
   - 旧库自动迁移：老记录统一归入 challenge='legacy'，不影响新题。
 
@@ -19,7 +19,7 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
   - 认领锁：claim / release / lanes，防止多个会话或子代理同时打同一目标。
 
 用法：
-    python board.py use web-19542
+    python board.py use web-8080
     python board.py current
     python board.py context [--all]
     python board.py fact "<标题>" "<增量结论>" --artifact a1x2y3-8f2a
@@ -56,7 +56,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.0.13"
+__version__ = "1.0.14"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (

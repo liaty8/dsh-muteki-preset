@@ -40,7 +40,7 @@ Copy-Item .\muteki-core.mjs "$p\muteki-core.mjs" -Force
 <artifactDir>/index.jsonl            # 索引：id / tool / ok / summary（board.py 读这个校验）
 ```
 
-- id 形如 `a` + base36 时间戳 + `-` + 6 位 hex，例如 `amwhs6uy4-8451fa`；
+- id 形如 `a` + base36 时间戳 + `-` + 6 位 hex，例如 `a1x2y3z4-8f2a`（合成示例）；
 - `board.py artifact list` / `artifact show <id>` 可直接查看；
 - 结果超过上限时保留前部并标 `truncated: true`，`digest` 仍是原始内容的 sha256。
 

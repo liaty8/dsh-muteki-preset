@@ -8,6 +8,61 @@
 
 ---
 
+## [1.0.14] - 2026-11-16
+
+对应路线图条目 **S1：发布前敏感信息门禁 + 仓库脱敏**（用户最高优先要求：公开仓库不得暴露任何真实作战数据）。
+
+### Added
+
+- **`scripts/check_sensitive.py`：发布前敏感信息门禁**（标准库，无第三方依赖）。
+  - 扫描范围：全部 git 已跟踪文件（默认）、`--staged` 只扫本次提交内容、`--paths` 指定文件、`--json` 供 CI 消费。
+  - 规则：盘符绝对路径、用户目录路径、IPv4、flag 形态值、UUID（会话 id / webhook token）、
+    muteki-core 证据 id、JWT、私钥头、webhook 回连地址、长 hex / base64、已知 token 前缀
+    （`ghp_` / `github_pat` / `sk-` / `AKIA` / `AIza` 等）、邮箱、机器用户名、凭据字段字面值。
+  - 输出**掩码**片段（`abc***gh(len=8)`），不把完整敏感值回显到终端或 CI 日志。
+  - 退出码：`0` 干净 / `1` 发现疑似敏感信息 / `2` 用法错误。**发现即阻止发布**。
+  - 设计原则 fail closed：宁可误报人工确认，也不漏报把真实数据推上公开仓库。
+- **本地黑名单 `scripts/sensitive.local.txt`**（已加入 `.gitignore`，不会提交）：
+  每行一个字面量，用于禁止自己的真实靶机 IP、题名、证据 id 前缀、机器用户名等出现在仓库里。
+- `tests/test_check_sensitive.py`：**23 个门禁回归用例**，同时覆盖「必须拦下」与「不得误报」两侧。
+  测试样本全部为合成值，并用字符串拼接构造，使源码中不出现完整敏感字面量
+  （否则门禁会把测试文件自己拦下，也避免真实数据进仓库）。
+- README 新增「发布前检查（敏感信息门禁）」与「测试」两节；目录结构补 `scripts/`、`tests/`、`CHANGELOG.md`；
+  「边界与安全」补充运行期数据含敏感信息的提醒。
+
+### Changed（脱敏，无行为变更）
+
+- 文档与工具描述里的**题名示例**统一改为 `web-8080`，替换掉原先带真实端口号的示例
+  （涉及 `README.md`、`board/SKILL.md`、`board/board.py` 文档字符串、
+  `plugins/dsh-muteki-orchestrator/plugin-v13.mjs` 的 `challenge` 参数描述、`preset/preset-muteki.patch.yml`）。
+- `plugins/muteki-core/README.md` 的证据 id 示例改为合成值 `a1x2y3z4-8f2a`，替换掉一个真实格式的历史 id。
+- `README.md` 的 flag 示例改为 `flag{...}`，去掉真实赛事前缀；python 路径示例改为 `<Python 安装目录>\python.exe`，
+  去掉盘符绝对路径。
+- `board.py` 与 orchestrator `package.json` 版本号同步到 `1.0.14`。
+
+### Migration
+
+- **无需迁移**：不涉及 schema 与配置变更，旧库旧配置直接可用。
+- 已有的本机安装若想让门禁生效，把 `scripts/` 目录一并复制过去，并在 `scripts/sensitive.local.txt`
+  里填自己的真实字面量（该文件永不提交）。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 36 tests ... OK
+python scripts/check_sensitive.py         # 干净：未发现敏感信息（rc=0）
+python board/board.py --version           # muteki-board 1.0.14
+```
+
+### 发布流程（从此每个 release 必做）
+
+1. 改代码 → 2. 跑 unittest → 3. 跑 `check_sensitive.py`（含 `--staged`）→ 4. commit →
+5. tag → 6. push → 7. 建 GitHub Release（release 正文同样不得含本机路径与真实作战数据）。
+
+[1.0.14]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.0.14
+
+---
+
 ## [1.0.13] - 2026-11-16
 
 对应路线图条目 **A1：任务与复核事件全部丢失**。

@@ -454,7 +454,7 @@ ${contextText}
       challenge: {
         type: "string",
         description:
-          "本轮题名（如 web-19542）。开工前会执行 board.py use 切到这道题，" +
+          "本轮题名（如 web-8080）。开工前会执行 board.py use 切到这道题，" +
           "旧题的 fact/deadend/task/flag 全部不可见，不会污染本轮首解判定。" +
           "省略时自动生成 run-<时间戳>。",
       },

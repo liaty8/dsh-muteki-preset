@@ -20,3 +20,6 @@ Thumbs.db
 
 # 依赖（本项目不需要 node_modules，但防止误提交）
 node_modules/
+
+# 本地敏感词黑名单（scripts/check_sensitive.py 用；含真实靶机/题名，绝不提交）
+scripts/sensitive.local.txt

@@ -39,7 +39,7 @@ DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工�
 
 黑板按题名隔离：fact / deadend / flag / task / review / claim 都带一个 `challenge` 字段，默认只读写「当前题」。上一题留下的 flag、事实、死路、任务不会出现在新题里，也不会被误当成本轮首解。
 
-- 开工先切题：`board.py use web-19542`（题名自取，如 `web-19542`、`pwn-heap-1`）；
+- 开工先切题：`board.py use web-8080`（题名自取，如 `web-8080`、`pwn-heap-1`）；
 - 查看当前题：`board.py current`；
 - 跨题回看：`context --all` / `task list --all` / `review list --all` / `stats --all`；
 - `muteki_run` 开工前会自动 `use` 到本轮题名（`challenge` 参数可指定，省略则生成 `run-<时间戳>`），并且只把「开工之后新出现的 flag」当作首解。
@@ -95,7 +95,7 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 {{PYTHON}} {{BOARD}} context
 
 # 切题 / 看当前题（按题隔离：上一题的记录默认不可见；--all 才跨题）
-{{PYTHON}} {{BOARD}} use web-19542
+{{PYTHON}} {{BOARD}} use web-8080
 {{PYTHON}} {{BOARD}} current
 {{PYTHON}} {{BOARD}} context --all
 
