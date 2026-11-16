@@ -4,7 +4,9 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-发布节奏：**一个问题一个 release**。每个 release 只解决路线图中的一条问题，附带回归测试与迁移说明。
+发布节奏：**3–5 个问题一个 release**（自 1.10.0 起）。每个 release 合并处理一批相关问题，附带回归测试与迁移说明；
+正文与 CHANGELOG 都**不写「接下来 / 下一步 / 后续」这类展望段落**。
+1.10.0 之前是一个问题一发，往届 21 个碎 release 已按阶段合并为 4 个（tag 与 commit 全部保留）。
 
 ---
 

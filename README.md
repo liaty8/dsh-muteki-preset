@@ -405,7 +405,7 @@ board.py report --json           # 供插件/CI 消费
 ```
 dsh-muteki-preset/
 ├─ install.ps1                     # Windows 一键安装
-├─ CHANGELOG.md                    # 变更记录（一个问题一个 release）
+├─ CHANGELOG.md                    # 变更记录（3–5 个问题一个 release）
 ├─ preset/
 │  └─ preset-muteki.patch.yml      # 预设定义（含占位符）
 ├─ plugins/
