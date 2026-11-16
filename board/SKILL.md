@@ -162,6 +162,10 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 {{PYTHON}} {{BOARD_PY}} search "关键词"
 {{PYTHON}} {{BOARD_PY}} read f3
 {{PYTHON}} {{BOARD_PY}} stats
+
+# 复盘报告：默认 Markdown（可直接贴 writeup），--json 供插件消费；--challenge / --all 指定范围
+{{PYTHON}} {{BOARD_PY}} report
+{{PYTHON}} {{BOARD_PY}} report --json
 ```
 
 `search` 覆盖 fact / deadend / flag / **task / review**（按题隔离，`--all` 跨题）。
@@ -188,4 +192,4 @@ id 前缀：`f`=fact/observation、`d`=deadend、`g`=flag、`t`=task、`r`=revie
 
 ## 收束
 
-任务结束时用一段话总结：已证实的事实（引用 f 编号）、已排除的方向（d 编号）、还缺什么、下一步最值得做什么。不要为了填满黑板而制造条目。
+任务结束时先跑 `report` 拿到结构化复盘（概览计数、flag 与验证状态、已证实事实、已排除方向、任务完成情况、复核意见、时间线、本题派单次数与 CLI 成本），再在此基础上用一段话总结：已证实的事实（引用 f 编号）、已排除的方向（d 编号）、还缺什么、下一步最值得做什么。不要为了填满黑板而制造条目。

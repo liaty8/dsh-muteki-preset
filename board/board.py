@@ -41,6 +41,7 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
     python board.py search "<关键词>" [--all]
     python board.py read f3 / d2 / g1 / r1 / t2 / a1x2y3-8f2a
     python board.py stats [--all]
+    python board.py report [--json] [--challenge web-8080] [--all]
 
 数据库默认在工作目录的 .muteki-board/board.db，可用 MUTEKI_BOARD_DB 覆盖；
 当前题可用 MUTEKI_CHALLENGE 覆盖（优先于 meta 里的值）。
@@ -59,7 +60,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -1377,6 +1378,226 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_jsonl(path: Path) -> list[dict]:
+    out: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(item, dict):
+                    out.append(item)
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def _read_json_list(path: Path) -> list[dict]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [x for x in data if isinstance(x, dict)]
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """B5：一屏复盘报告（默认 Markdown，可直接贴 writeup / release notes）。"""
+    conn = connect()
+    current = current_challenge(conn)
+    target = getattr(args, "challenge", None)
+    all_flag = bool(getattr(args, "all", False)) and not target
+    ch = str(target).strip() if target else current
+    cond, params = ("", []) if all_flag else (" AND challenge = ?", [ch])
+
+    facts = conn.execute(
+        f"SELECT * FROM facts WHERE level='fact' AND superseded_by IS NULL{cond} ORDER BY id", params
+    ).fetchall()
+    observations = conn.execute(
+        f"SELECT * FROM facts WHERE level='observation' AND superseded_by IS NULL{cond} ORDER BY id", params
+    ).fetchall()
+    deadends = conn.execute(f"SELECT * FROM deadends WHERE 1=1{cond} ORDER BY id", params).fetchall()
+    flags = conn.execute(f"SELECT * FROM flags WHERE 1=1{cond} ORDER BY id", params).fetchall()
+    tasks = conn.execute(f"SELECT * FROM tasks WHERE 1=1{cond} ORDER BY id", params).fetchall()
+    reviews = conn.execute(f"SELECT * FROM reviews WHERE 1=1{cond} ORDER BY id", params).fetchall()
+
+    events = []
+    for row in conn.execute("SELECT ts, kind, payload FROM events ORDER BY id").fetchall():
+        try:
+            payload = json.loads(row["payload"])
+        except Exception:
+            payload = {}
+        if not all_flag and str(payload.get("challenge", "")) != ch:
+            continue
+        events.append({"ts": row["ts"], "kind": row["kind"], "payload": payload})
+
+    storage = artifact_dir()
+    runs = [r for r in _read_json_list(storage / "runs.json") if all_flag or str(r.get("challenge", "")) == ch]
+    costs = [c for c in _read_json_list(storage / "costs.json") if all_flag or str(c.get("challenge", "")) == ch]
+    cost_total = sum(float(c.get("usd") or 0) for c in costs)
+    subagents = _read_jsonl(storage / "subagents.jsonl")
+
+    task_status: dict[str, int] = {}
+    for row in tasks:
+        task_status[row["status"]] = task_status.get(row["status"], 0) + 1
+    flag_status: dict[str, int] = {}
+    for row in flags:
+        key = str(dict(row).get("status") or "candidate")
+        flag_status[key] = flag_status.get(key, 0) + 1
+    open_reviews = [dict(r) for r in reviews if r["status"] == "open"]
+
+    span = ""
+    if events:
+        span = f"{events[0]['ts']} → {events[-1]['ts']}"
+
+    data = {
+        "challenge": ch if not all_flag else "(全部题)",
+        "current_challenge": current,
+        "db": str(db_path()),
+        "artifacts": str(storage),
+        "generated_at": now(),
+        "counts": {
+            "facts": len(facts),
+            "observations": len(observations),
+            "deadends": len(deadends),
+            "flags": len(flags),
+            "tasks": len(tasks),
+            "reviews": len(reviews),
+            "open_reviews": len(open_reviews),
+            "events": len(events),
+        },
+        "task_status": task_status,
+        "flag_status": flag_status,
+        "span": span,
+        "dispatches": len(runs),
+        "cli_cost_usd": round(cost_total, 4),
+        "subagent_events": len(subagents),
+        "flags": [dict(r) for r in flags],
+        "facts": [dict(r) for r in facts],
+        "observations": [dict(r) for r in observations],
+        "deadends": [dict(r) for r in deadends],
+        "tasks": [dict(r) for r in tasks],
+        "reviews": [dict(r) for r in reviews],
+        "timeline": events,
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
+    scope = "全部题" if all_flag else f"题 {ch}"
+    lines = [
+        f"# Muteki 复盘报告 · {scope}",
+        "",
+        f"- 生成时间：{data['generated_at']}",
+        f"- 黑板：{data['db']}",
+        f"- 证据库：{data['artifacts']}",
+        f"- 作战跨度：{span or '（无事件）'}",
+        f"- 派单记录：{len(runs)} 条 · CLI 成本：${cost_total:.4f} · 子代理日志：{len(subagents)} 条（全机累计）",
+        "",
+        "## 概览",
+        "",
+        f"事实 {len(facts)}（另有观察 {len(observations)}）· 死路 {len(deadends)} · "
+        f"flag {len(flags)}（{', '.join(f'{k} {v}' for k, v in sorted(flag_status.items())) or '无'}）· "
+        f"任务 {len(tasks)}（{', '.join(f'{k} {v}' for k, v in sorted(task_status.items())) or '无'}）· "
+        f"复核 {len(reviews)}（待处理 {len(open_reviews)}）",
+        "",
+    ]
+
+    lines += ["## flag", ""]
+    if flags:
+        for row in flags:
+            d = dict(row)
+            arts = json.loads(d.get("artifacts") or "[]")
+            lines.append(
+                f"- g{d['id']} [{d.get('status') or 'candidate'}] `{d['value']}`"
+                f"（题 {d['challenge']}，{d['created_at']}）"
+            )
+            lines.append(f"  来源：{d.get('source') or '未注明'}；证据：{', '.join(arts) or '未绑定'}")
+            if d.get("verified_by"):
+                lines.append(f"  判定依据：{d['verified_by']}")
+            if d.get("note"):
+                lines.append(f"  备注：{d['note']}")
+    else:
+        lines.append("（无）")
+    lines.append("")
+
+    lines += ["## 已证实事实", ""]
+    if facts:
+        for row in facts:
+            arts = json.loads(row["artifacts"] or "[]")
+            lines.append(f"- f{row['id']} {row['title']}（证据：{', '.join(arts) or '无'}）")
+            lines.append(f"  {row['content']}")
+    else:
+        lines.append("（无）")
+    lines.append("")
+
+    lines += ["## 已排除方向", ""]
+    if deadends:
+        for row in deadends:
+            arts = json.loads(row["artifacts"] or "[]")
+            lines.append(f"- d{row['id']} {row['reason']}（证据：{', '.join(arts) or '无'}）")
+            if row["tested"]:
+                lines.append(f"  测了什么：{row['tested']}")
+            if row["observed"]:
+                lines.append(f"  实际看到：{row['observed']}")
+    else:
+        lines.append("（无）")
+    lines.append("")
+
+    lines += ["## 任务", ""]
+    if tasks:
+        for row in tasks:
+            owner = f"，归 {row['owner']}" if row["owner"] else ""
+            lines.append(f"- t{row['id']} [{row['status']}] p{row['priority']} {row['title']}{owner}")
+            if row["detail"]:
+                lines.append(f"  {row['detail']}")
+    else:
+        lines.append("（无）")
+    lines.append("")
+
+    lines += ["## 复核意见", ""]
+    if reviews:
+        for row in reviews:
+            tgt = f" → {row['target']}" if row["target"] else ""
+            lines.append(f"- r{row['id']} [{row['kind']}] {row['status']}{tgt} {row['note']}")
+    else:
+        lines.append("（无）")
+    lines.append("")
+
+    if observations:
+        lines += ["## 未证实观察（不要当结论用）", ""]
+        for row in observations:
+            lines.append(f"- f{row['id']} {row['title']}：{row['content']}")
+        lines.append("")
+
+    lines += ["## 时间线", ""]
+    if events:
+        for item in events:
+            p = item["payload"]
+            ident = p.get("id")
+            prefix = {"fact": "f", "observation": "f", "deadend": "d", "flag": "g"}.get(item["kind"], "")
+            label = f"{prefix}{ident}" if prefix and ident is not None else item["kind"]
+            extra = p.get("title") or p.get("reason") or p.get("value") or p.get("note") or ""
+            if item["kind"] == "flag_status":
+                extra = f"{p.get('from')} → {p.get('to')}"
+            if item["kind"] == "adopted":
+                extra = f"迁移 {len(p.get('moved') or [])} 条 → {p.get('target')}"
+            lines.append(f"- {item['ts']}  {item['kind']}  {label}  {short(str(extra), 120)}")
+    else:
+        lines.append("（无事件）")
+    lines.append("")
+
+    print("\n".join(lines).rstrip())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="board.py", description="Muteki 作战黑板（按题隔离）")
     parser.add_argument(
@@ -1538,6 +1759,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats", help="统计计数")
     p.add_argument("--all", action="store_true", help="跨全部题统计")
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("report", help="复盘报告（默认 Markdown，--json 结构化）")
+    p.add_argument("--json", action="store_true", help="结构化输出（供插件 / CI 消费）")
+    p.add_argument("--md", action="store_true", help="显式 Markdown（默认即 Markdown）")
+    p.add_argument("--challenge", default=None, help="指定题名，省略则用当前题")
+    p.add_argument("--all", action="store_true", help="跨全部题")
+    p.set_defaults(func=cmd_report)
     return parser
 
 

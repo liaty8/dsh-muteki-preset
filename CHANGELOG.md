@@ -8,6 +8,50 @@
 
 ---
 
+## [1.5.0] - 2026-11-16
+
+对应路线图条目 **B5：缺「复盘 / 下一步」出口**。新能力，升 minor。
+
+### Added
+
+- **新命令 `report`**：一屏复盘报告，默认 **Markdown**（可直接贴 writeup / release notes），
+  `--json` 输出结构化数据供插件与 CI 消费，`--md` 为显式别名。
+  范围：默认当前题，`--challenge <题名>` 指定，`--all` 跨全部题。
+- 报告内容：
+  - 元信息：生成时间、黑板路径、证据库路径、**作战跨度**（首末事件时间）；
+  - 概览计数：事实 / 观察 / 死路 / flag（按状态分布）/ 任务（按状态分布）/ 复核（含待处理数）；
+  - flag 明细：状态、来源、证据 id、判定依据、备注；
+  - 已证实事实、已排除方向（含测了什么 / 实际看到）、任务、复核意见、未证实观察；
+  - **时间线**：逐条事件（依赖 A1 修好的事件持久化），flag 状态变更显示 from→to，adopt 显示迁移条数；
+  - **账本整合**：读取证据目录下的 `runs.json` / `costs.json`，按题过滤出本题派单次数与 CLI 成本；
+    `subagents.jsonl` 条数（全机累计，明确标注）。
+- 新增 `_read_jsonl()` / `_read_json_list()` 两个容错读取辅助（坏行跳过、文件缺失返回空）。
+- `tests/test_board.py` 新增 `TestReport`（7 个用例）：Markdown 段落齐全、JSON 结构与计数、
+  按题过滤、`--all` 跨题、账本整合（派单次数与成本）、空库不崩、`--md` 与默认输出一致。
+
+### Changed
+
+- `board/SKILL.md`：命令块补 `report`；「收束」改为先跑 report 再写总结。
+- `board.py` 文档字符串补 report 用法。
+- 版本号同步到 `1.5.0`。
+
+### Migration
+
+无需迁移，不涉及 schema 变更。账本文件缺失时报告照常生成（对应计数为 0）。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 112 tests ... OK
+python board/board.py report
+python board/board.py report --json
+python board/board.py --version           # muteki-board 1.5.0
+```
+
+[1.5.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.5.0
+
+---
+
 ## [1.4.0] - 2026-11-16
 
 对应路线图条目 **B4：按题隔离把历史成果变成孤儿**。新能力，升 minor。

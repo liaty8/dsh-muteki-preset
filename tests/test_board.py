@@ -666,5 +666,97 @@ class TestAdopt(BoardCase):
         self.assertIn("旧死路", out)
 
 
+class TestReport(BoardCase):
+    """B5：复盘报告（Markdown / JSON / 按题过滤 / 账本整合）。"""
+
+    def _seed(self) -> None:
+        aid = self.make_artifact()
+        self.board("use", "web-r")
+        self.board("fact", "入口", "可复用入口", "--artifact", aid)
+        self.board("deadend", "排除", "--tested", "范围", "--observed", "结果")
+        self.board("flag", "flag{test}", "--source", "响应", "--artifact", aid)
+        self.board("flagstatus", "1", "--set", "accepted", "--verified-by", "平台回显")
+        self.board("task", "add", "步骤一")
+        self.board("task", "done", "1")
+        self.board("review", "add", "--kind", "gap", "--note", "缺验证")
+
+    def test_markdown_report_sections(self) -> None:
+        self._seed()
+        out = self.board("report").stdout
+        for needle in ("# Muteki 复盘报告", "## 概览", "## flag", "## 已证实事实",
+                       "## 已排除方向", "## 任务", "## 复核意见", "## 时间线"):
+            self.assertIn(needle, out)
+        self.assertIn("入口", out)
+        self.assertIn("flag{test}", out)
+        self.assertIn("[accepted]", out)
+        self.assertIn("task_done", out)
+
+    def test_json_report_structure(self) -> None:
+        import json
+
+        self._seed()
+        data = json.loads(self.board("report", "--json").stdout)
+        self.assertEqual(data["challenge"], "web-r")
+        self.assertEqual(data["counts"]["facts"], 1)
+        self.assertEqual(data["counts"]["deadends"], 1)
+        self.assertEqual(data["counts"]["flags"], 1)
+        self.assertEqual(data["flag_status"], {"accepted": 1})
+        self.assertEqual(data["task_status"], {"done": 1})
+        self.assertTrue(data["span"])
+        kinds = {e["kind"] for e in data["timeline"]}
+        self.assertIn("task_added", kinds)
+        self.assertIn("flag_status", kinds)
+
+    def test_report_challenge_filter(self) -> None:
+        import json
+
+        self._seed()
+        self.board("use", "web-other")
+        self.board("fact", "别题事实", "别题结论")
+        data = json.loads(self.board("report", "--challenge", "web-r", "--json").stdout)
+        self.assertEqual(data["counts"]["facts"], 1)
+        self.assertEqual(data["challenge"], "web-r")
+
+    def test_report_all_includes_other_challenges(self) -> None:
+        import json
+
+        self._seed()
+        aid = self.make_artifact(aid="atest0002-abcdef")
+        self.board("use", "web-other")
+        self.board("fact", "别题事实", "别题结论", "--artifact", aid)
+        data = json.loads(self.board("report", "--all", "--json").stdout)
+        self.assertEqual(data["counts"]["facts"], 2)
+
+    def test_report_integrates_ledgers(self) -> None:
+        import json
+        import time as _time
+
+        self._seed()
+        now_ms = int(_time.time() * 1000)
+        (self.artifacts / "runs.json").write_text(
+            json.dumps([{"ts": now_ms, "challenge": "web-r"}, {"ts": now_ms, "challenge": "other"}]),
+            encoding="utf-8",
+        )
+        (self.artifacts / "costs.json").write_text(
+            json.dumps([{"ts": now_ms, "usd": 0.5, "engine": "claude-cli", "challenge": "web-r"}]),
+            encoding="utf-8",
+        )
+        data = json.loads(self.board("report", "--json").stdout)
+        self.assertEqual(data["dispatches"], 1)
+        self.assertEqual(data["cli_cost_usd"], 0.5)
+        self.assertIn("$0.5000", self.board("report").stdout)
+
+    def test_report_empty_board_does_not_crash(self) -> None:
+        out = self.board("report").stdout
+        self.assertIn("## 概览", out)
+        self.assertIn("（无）", out)
+
+    def test_report_md_flag_is_default(self) -> None:
+        self._seed()
+        a = [ln for ln in self.board("report", "--md").stdout.splitlines() if "生成时间" not in ln]
+        b = [ln for ln in self.board("report").stdout.splitlines() if "生成时间" not in ln]
+        self.assertEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()
