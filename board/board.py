@@ -21,6 +21,7 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
 用法：
     python board.py use web-8080
     python board.py current
+    python board.py adopt f1,d3,g1 [--challenge web-8080]
     python board.py context [--all]
     python board.py fact "<标题>" "<增量结论>" --artifact a1x2y3-8f2a [--quote "原文片段"]
     python board.py fact "<标题>" "<尚未证实的观察>"
@@ -58,7 +59,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -876,6 +877,34 @@ def cmd_context(args: argparse.Namespace) -> int:
         "",
     ]
 
+    # B4：当前题空、但其他题（含 legacy）有数据时给出迁移提示，避免成果「看起来消失了」
+    if not all_flag and not (facts or deadends or flags or observations):
+        other_facts = conn.execute(
+            "SELECT COUNT(*) c FROM facts WHERE challenge != ?", (ch,)
+        ).fetchone()["c"]
+        other_dead = conn.execute(
+            "SELECT COUNT(*) c FROM deadends WHERE challenge != ?", (ch,)
+        ).fetchone()["c"]
+        other_flags = conn.execute(
+            "SELECT COUNT(*) c FROM flags WHERE challenge != ?", (ch,)
+        ).fetchone()["c"]
+        if other_facts or other_dead or other_flags:
+            names = [
+                str(r["challenge"])
+                for r in conn.execute(
+                    "SELECT DISTINCT challenge FROM facts WHERE challenge != ? "
+                    "UNION SELECT DISTINCT challenge FROM flags WHERE challenge != ? "
+                    "UNION SELECT DISTINCT challenge FROM deadends WHERE challenge != ?",
+                    (ch, ch, ch),
+                ).fetchall()
+            ]
+            header += [
+                f"提示：当前题还没有记录，但其他题有 {other_facts} facts / "
+                f"{other_dead} deadends / {other_flags} flags（{', '.join(names)}）。",
+                "      用 `adopt <id...>` 把属于本题的记录迁过来，或 `context --all` 跨题查看。",
+                "",
+            ]
+
     # B2：按 section 组织，默认优先级 flags → deadends → facts(新→旧) → tasks →
     # reviews → observations → claims → superseded。此前 deadends 排在最后，
     # 上游按字符数截断时最先被切掉的恰好是「避免重复踩坑」的死路。
@@ -1254,6 +1283,69 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 2
 
 
+ADOPT_TABLES = {"f": "facts", "d": "deadends", "g": "flags", "t": "tasks", "r": "reviews"}
+
+
+def cmd_adopt(args: argparse.Namespace) -> int:
+    """B4：把记录归属迁移到目标题（默认当前题），解决 legacy / 旧题数据孤儿问题。"""
+    conn = connect()
+    ch = current_challenge(conn)
+    target = str(args.challenge or ch).strip()
+    if not target:
+        print("目标题名不能为空", file=sys.stderr)
+        return 2
+    ids: list[str] = []
+    for item in args.ids:
+        for piece in str(item).replace(",", " ").split():
+            piece = piece.strip()
+            if piece and piece not in ids:
+                ids.append(piece)
+    if not ids:
+        print("没有给出要迁移的记录 id", file=sys.stderr)
+        return 2
+
+    moved: list[dict] = []
+    skipped: list[str] = []
+    for raw in ids:
+        prefix = raw[0].lower() if raw[:1].isalpha() else ""
+        number = raw[1:] if raw[:1].isalpha() else raw
+        table = ADOPT_TABLES.get(prefix)
+        if table is None or not number.isdigit():
+            skipped.append(f"{raw}（无法解析）")
+            continue
+        rid = int(number)
+        row = conn.execute(f"SELECT id, challenge FROM {table} WHERE id = ?", (rid,)).fetchone()
+        if row is None:
+            skipped.append(f"{raw}（不存在）")
+            continue
+        source = str(row["challenge"])
+        if source == target:
+            skipped.append(f"{raw}（已在题 {target}）")
+            continue
+        if table == "flags":
+            value = conn.execute("SELECT value FROM flags WHERE id = ?", (rid,)).fetchone()["value"]
+            clash = conn.execute(
+                "SELECT id FROM flags WHERE challenge = ? AND value = ?", (target, value)
+            ).fetchone()
+            if clash is not None:
+                skipped.append(f"{raw}（目标题已有同值 flag g{clash['id']}）")
+                continue
+        conn.execute(f"UPDATE {table} SET challenge = ? WHERE id = ?", (target, rid))
+        moved.append({"id": raw, "table": table, "from": source, "to": target})
+
+    if moved:
+        commit_with_event(conn, "adopted", {"target": target, "moved": moved, "skipped": skipped})
+    print(
+        f"归属迁移 → 题 {target}：成功 {len(moved)} 条"
+        + (f"，跳过 {len(skipped)} 条" if skipped else "")
+    )
+    for item in moved:
+        print(f"  {item['id']}  {item['from']} → {item['to']}")
+    for note in skipped:
+        print(f"  跳过 {note}")
+    return 0 if moved else 1
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     conn = connect()
     ch = current_challenge(conn)
@@ -1437,6 +1529,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("read", help="读取一条记录，如 f3 / d2 / g1 / r1 / t2 / a1x2")
     p.add_argument("id")
     p.set_defaults(func=cmd_read)
+
+    p = sub.add_parser("adopt", help="把记录归属迁移到目标题（默认当前题），解决 legacy/旧题孤儿数据")
+    p.add_argument("ids", nargs="+", help="记录 id，如 f1 d3 g1 t2 r1；可逗号分隔或重复传参")
+    p.add_argument("--challenge", default=None, help="目标题名，省略则用当前题")
+    p.set_defaults(func=cmd_adopt)
 
     p = sub.add_parser("stats", help="统计计数")
     p.add_argument("--all", action="store_true", help="跨全部题统计")

@@ -584,5 +584,87 @@ class TestContextBudgetAndOrder(BoardCase):
         self.assertEqual(len(data["deadends"]), 3)
 
 
+class TestAdopt(BoardCase):
+    """B4：归属迁移 + 空题提示（解决 legacy / 旧题数据孤儿）。"""
+
+    def _seed_legacy(self) -> None:
+        aid = self.make_artifact()
+        self.board("use", "legacy")
+        self.board("fact", "旧事实", "旧结论", "--artifact", aid)
+        self.board("deadend", "旧死路", "--tested", "范围", "--observed", "结果")
+        self.board("flag", "flag{test}", "--source", "旧响应")
+        self.board("task", "add", "旧任务")
+        self.board("review", "add", "--kind", "gap", "--note", "旧意见")
+        self.board("use", "web-new")
+
+    def test_adopt_moves_all_record_types(self) -> None:
+        self._seed_legacy()
+        proc = self.board("adopt", "f1", "d1", "g1", "t1", "r1")
+        self.assertIn("成功 5 条", proc.stdout)
+        for table in ("facts", "deadends", "flags", "tasks", "reviews"):
+            self.assertEqual(
+                self.query(f"SELECT challenge FROM {table} WHERE id=1")[0][0], "web-new"
+            )
+        self.assertIn("adopted", self.event_kinds())
+
+    def test_adopt_comma_separated(self) -> None:
+        self._seed_legacy()
+        self.board("adopt", "f1,d1,g1")
+        self.assertEqual(self.query("SELECT challenge FROM facts WHERE id=1")[0][0], "web-new")
+        self.assertEqual(self.query("SELECT challenge FROM flags WHERE id=1")[0][0], "web-new")
+
+    def test_adopt_explicit_target(self) -> None:
+        self._seed_legacy()
+        self.board("adopt", "f1", "--challenge", "web-other")
+        self.assertEqual(self.query("SELECT challenge FROM facts WHERE id=1")[0][0], "web-other")
+
+    def test_adopt_already_in_target_skipped(self) -> None:
+        self._seed_legacy()
+        self.board("adopt", "f1")
+        proc = self.board("adopt", "f1", expect=1)
+        self.assertIn("已在题", proc.stdout)
+
+    def test_adopt_missing_id_returns_1(self) -> None:
+        self.board("adopt", "f999", expect=1)
+
+    def test_adopt_bad_prefix_returns_1(self) -> None:
+        self.board("adopt", "z1", expect=1)
+
+    def test_adopt_flag_value_clash_skipped(self) -> None:
+        self._seed_legacy()
+        self.execute(
+            "INSERT INTO flags (challenge, value, source, created_at) VALUES ('web-new', 'flag{test}', 'x', '2026-01-01 00:00:00')"
+        )
+        proc = self.board("adopt", "g1", expect=1)
+        self.assertIn("同值 flag", proc.stdout)
+        self.assertEqual(self.query("SELECT challenge FROM flags WHERE id=1")[0][0], "legacy")
+
+    def test_context_hints_when_current_empty(self) -> None:
+        self._seed_legacy()
+        out = self.board("context").stdout
+        self.assertIn("当前题还没有记录", out)
+        self.assertIn("adopt", out)
+        self.assertIn("legacy", out)
+
+    def test_context_no_hint_when_current_has_data(self) -> None:
+        self._seed_legacy()
+        self.board("fact", "新事实", "新结论")
+        out = self.board("context").stdout
+        self.assertNotIn("当前题还没有记录", out)
+
+    def test_context_all_no_hint(self) -> None:
+        self._seed_legacy()
+        out = self.board("context", "--all").stdout
+        self.assertNotIn("当前题还没有记录", out)
+
+    def test_adopted_records_visible_in_context(self) -> None:
+        self._seed_legacy()
+        self.board("adopt", "f1,g1,d1")
+        out = self.board("context").stdout
+        self.assertIn("旧事实", out)
+        self.assertIn("flag{test}", out)
+        self.assertIn("旧死路", out)
+
+
 if __name__ == "__main__":
     unittest.main()

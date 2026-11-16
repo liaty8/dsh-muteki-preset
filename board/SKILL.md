@@ -46,6 +46,8 @@ DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工�
 - 开工先切题：`board.py use web-8080`（题名自取，如 `web-8080`、`pwn-heap-1`）；
 - 查看当前题：`board.py current`；
 - 跨题回看：`context --all` / `task list --all` / `review list --all` / `stats --all`；
+- **归属迁移**：旧题或 `legacy` 里属于本题的记录用 `adopt` 迁过来（默认迁到当前题，`--challenge` 指定目标）。
+  当前题为空而其他题有数据时，`context` 顶部会给出提示与迁移命令，避免已解出的成果「看起来消失了」。
 - `muteki_run` 开工前会自动 `use` 到本轮题名（`challenge` 参数可指定，省略则生成 `run-<时间戳>`），并且只把「开工之后新出现的 flag」当作首解。
 
 环境变量 `MUTEKI_CHALLENGE` 可覆盖当前题名（优先级高于数据库里的 meta）。
@@ -108,6 +110,10 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 {{PYTHON}} {{BOARD_PY}} use web-8080
 {{PYTHON}} {{BOARD_PY}} current
 {{PYTHON}} {{BOARD_PY}} context --all
+
+# 把旧题/legacy 里属于本题的记录迁到当前题（可逗号分隔；--challenge 指定目标题）
+{{PYTHON}} {{BOARD_PY}} adopt f1,d3,g1
+{{PYTHON}} {{BOARD_PY}} adopt f9 --challenge web-8080
 
 # 认领资源（手动 claim 默认 600 秒；muteki_dispatch 的 lane_ttl 默认 900 秒；--ttl 调时长）
 {{PYTHON}} {{BOARD_PY}} claim web-login --ttl 900 --note "SQL 注入验证"

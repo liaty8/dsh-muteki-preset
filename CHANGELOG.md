@@ -8,6 +8,52 @@
 
 ---
 
+## [1.4.0] - 2026-11-16
+
+对应路线图条目 **B4：按题隔离把历史成果变成孤儿**。新能力，升 minor。
+
+### 问题
+
+按题隔离上线后，旧记录统一归入 `legacy`，默认不可见。实测一个真实作战库：
+当前题 `context` 显示 **flag 0**，而两个已解出的 flag 与 9 条 fact 全在 `legacy`——
+用户「已经解出的题」在黑板上看起来消失了，换题后也无路复用旧结论。
+
+### Added
+
+- **新命令 `adopt <ids...> [--challenge <题名>]`**：把 facts / deadends / flags / tasks / reviews
+  的归属迁移到目标题（**默认当前题**）。支持逗号分隔与重复传参；写 `adopted` 事件（含 from/to 明细）。
+  - 已在目标题、id 不存在、前缀无法解析 → 跳过并说明；全部跳过时 rc=1。
+  - flag 迁移遇到目标题已有同值 flag（`UNIQUE(challenge, value)`）→ 跳过并指出冲突的 g 编号，不破坏唯一约束。
+- **`context` 空题提示**：当前题没有任何 facts / deadends / flags / observations，
+  而其他题（含 legacy）有数据时，顶部输出统计与题名，并给出 `adopt` / `context --all` 两条出路。
+- `tests/test_board.py` 新增 `TestAdopt`（11 个用例）：五类记录迁移、逗号分隔、显式目标题、
+  重复迁移跳过、不存在 id、非法前缀、flag 同值冲突、空题提示出现/不出现/`--all` 不提示、
+  迁移后记录在 context 可见。
+
+### Changed
+
+- `board/SKILL.md`：按题隔离小节补「归属迁移」说明；命令块补 `adopt` 示例。
+- `board.py` 文档字符串补 `adopt` 用法。
+- 版本号同步到 `1.4.0`。
+
+### Migration
+
+- 无需迁移，不涉及 schema 变更。
+- **旧库里的 `legacy` 记录不会被自动搬动**：是否属于当前题由人判断，用 `adopt` 显式迁移，
+  每次迁移都留审计事件。这样不会把上一题的结论误当成本题首解。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 105 tests ... OK
+python board/board.py adopt f1,d3,g1
+python board/board.py --version           # muteki-board 1.4.0
+```
+
+[1.4.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.4.0
+
+---
+
 ## [1.3.0] - 2026-11-16
 
 对应路线图条目 **B2（黑板侧）：context 截断会先丢掉死路**。新能力，升 minor。
