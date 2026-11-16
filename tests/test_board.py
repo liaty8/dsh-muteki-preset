@@ -930,5 +930,89 @@ class TestReport(BoardCase):
         self.assertEqual(a, b)
 
 
+class TestPrefixedIds(BoardCase):
+    """v1.9.2：task / review / flagstatus 也接受带前缀的 id（t1 / r1 / g1）。
+
+    read / search / task list 都用带前缀的 id 展示，子代理照着抄就会写
+    `task done t1`；以前只收纯数字，报 invalid int value 让它绕一次弯。
+    """
+
+    def _seed(self) -> None:
+        self.board("task", "add", "任务一")
+        self.board("review", "add", "--kind", "gap", "--note", "缺验证")
+        self.board("flag", "flag{test}", "--source", "响应")
+
+    def test_task_done_accepts_prefix(self) -> None:
+        self._seed()
+        proc = self.board("task", "done", "t1")
+        self.assertIn("t1 → done", proc.stdout)
+        self.assertEqual(self.query("SELECT status FROM tasks WHERE id=1")[0][0], "done")
+
+    def test_task_claim_accepts_prefix(self) -> None:
+        self._seed()
+        self.board("task", "claim", "t1", "--owner", "worker-a")
+        self.assertEqual(self.query("SELECT owner FROM tasks WHERE id=1")[0][0], "worker-a")
+
+    def test_task_reopen_accepts_prefix(self) -> None:
+        self._seed()
+        self.board("task", "claim", "1", "--owner", "worker-a")
+        self.board("task", "reopen", "t1")
+        self.assertEqual(self.query("SELECT status FROM tasks WHERE id=1")[0][0], "open")
+
+    def test_task_drop_accepts_prefix(self) -> None:
+        self._seed()
+        self.board("task", "drop", "t1")
+        self.assertEqual(self.query("SELECT status FROM tasks WHERE id=1")[0][0], "dropped")
+
+    def test_review_resolve_accepts_prefix(self) -> None:
+        self._seed()
+        self.board("review", "resolve", "r1")
+        self.assertEqual(self.query("SELECT status FROM reviews WHERE id=1")[0][0], "resolved")
+
+    def test_flagstatus_accepts_prefix(self) -> None:
+        self._seed()
+        self.board("flagstatus", "g1", "--set", "accepted", "--verified-by", "平台回显")
+        self.assertEqual(self.query("SELECT status FROM flags WHERE id=1")[0][0], "accepted")
+
+    def test_uppercase_prefix_accepted(self) -> None:
+        self._seed()
+        self.board("task", "done", "T1")
+        self.assertEqual(self.query("SELECT status FROM tasks WHERE id=1")[0][0], "done")
+
+    def test_numeric_id_still_works(self) -> None:
+        self._seed()
+        self.board("task", "done", "1")
+        self.board("review", "resolve", "1")
+        self.board("flagstatus", "1", "--set", "submitted")
+        self.assertEqual(self.query("SELECT status FROM tasks WHERE id=1")[0][0], "done")
+        self.assertEqual(self.query("SELECT status FROM reviews WHERE id=1")[0][0], "resolved")
+        self.assertEqual(self.query("SELECT status FROM flags WHERE id=1")[0][0], "submitted")
+
+    def test_wrong_prefix_rejected(self) -> None:
+        self._seed()
+        proc = self.board("task", "done", "g1", expect=2)
+        self.assertIn("id 应为 t", proc.stderr)
+        self.board("flagstatus", "t1", "--set", "accepted", expect=2)
+        self.board("review", "resolve", "f1", expect=2)
+        # 拒写之后状态不能变
+        self.assertEqual(self.query("SELECT status FROM tasks WHERE id=1")[0][0], "open")
+
+    def test_non_numeric_rejected(self) -> None:
+        self._seed()
+        self.board("task", "done", "abc", expect=2)
+        self.board("task", "done", "t", expect=2)
+        self.board("task", "done", "t1x", expect=2)
+
+    def test_prefix_id_writes_same_event_as_numeric(self) -> None:
+        self._seed()
+        self.board("task", "done", "t1")
+        kinds = self.event_kinds()
+        self.assertIn("task_done", kinds)
+        rows = self.query("SELECT payload FROM events WHERE kind='task_done'")
+        import json
+
+        self.assertEqual(json.loads(rows[0][0])["id"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

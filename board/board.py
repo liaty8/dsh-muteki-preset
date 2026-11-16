@@ -60,7 +60,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.9.1"
+__version__ = "1.9.2"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -1671,6 +1671,28 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def record_id_type(prefix: str):
+    """argparse 类型：既接受纯数字 1，也接受带前缀的 t1 / g1 / r1。
+
+    read / search / task list 都用带前缀的 id 展示，子代理照着抄就会写
+    `task done t1`；以前只收纯数字，报 invalid int value 让它绕一次弯。
+    前缀必须与命令匹配（task 收 t、flagstatus 收 g、review 收 r），
+    写错前缀仍然报错，不会静默当成另一条记录。
+    """
+
+    def parse(raw: str) -> int:
+        text = str(raw).strip()
+        if text[:1].lower() == prefix:
+            text = text[1:]
+        if not text.isdigit():
+            raise argparse.ArgumentTypeError(
+                f"id 应为 {prefix}<数字> 或纯数字，收到：{raw}"
+            )
+        return int(text)
+
+    return parse
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="board.py", description="Muteki 作战黑板（按题隔离）")
     parser.add_argument(
@@ -1715,17 +1737,17 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--all", action="store_true", help="跨全部题查看")
     q.set_defaults(func=cmd_task)
     q = task_sub.add_parser("claim", help="原子认领一个 open 任务")
-    q.add_argument("id", type=int)
+    q.add_argument("id", type=record_id_type("t"), help="任务 id：1 或 t1")
     q.add_argument("--owner", default=None)
     q.set_defaults(func=cmd_task)
     q = task_sub.add_parser("done", help="把任务标记完成")
-    q.add_argument("id", type=int)
+    q.add_argument("id", type=record_id_type("t"), help="任务 id：1 或 t1")
     q.set_defaults(func=cmd_task)
     q = task_sub.add_parser("drop", help="放弃任务")
-    q.add_argument("id", type=int)
+    q.add_argument("id", type=record_id_type("t"), help="任务 id：1 或 t1")
     q.set_defaults(func=cmd_task)
     q = task_sub.add_parser("reopen", help="把中断后卡在 claimed 的任务释放回 open")
-    q.add_argument("id", type=int)
+    q.add_argument("id", type=record_id_type("t"), help="任务 id：1 或 t1")
     q.set_defaults(func=cmd_task)
     q = task_sub.add_parser("reclaim", help="批量释放超时未完成的 claimed 任务")
     q.add_argument("--minutes", type=int, default=30, help="超过多少分钟视为卡住（默认 30）")
@@ -1749,7 +1771,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--all", action="store_true", help="跨全部题查看")
     q.set_defaults(func=cmd_review)
     q = review_sub.add_parser("resolve", help="关闭一条复核意见")
-    q.add_argument("id", type=int)
+    q.add_argument("id", type=record_id_type("r"), help="复核 id：1 或 r1")
     q.set_defaults(func=cmd_review)
 
     p = sub.add_parser("fact", help="记录一条事实（无 --artifact 时记为观察）")
@@ -1788,7 +1810,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_flag)
 
     p = sub.add_parser("flagstatus", help="改 flag 验证状态：candidate/submitted/accepted/rejected")
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=record_id_type("g"), help="flag id：1 或 g1")
     p.add_argument("--set", required=True, choices=FLAG_STATUSES, dest="set")
     p.add_argument("--verified-by", default=None, dest="verified_by", help="判定依据（平台回显 / 复核人）")
     p.add_argument("--note", default=None)

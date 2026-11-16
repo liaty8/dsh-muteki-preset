@@ -8,6 +8,57 @@
 
 ---
 
+## [1.9.2] - 2026-11-16
+
+来自 DSH 实机验证反馈：**worker 写 `task done t1` 被拒**。缺陷修复（可用性），升 patch。
+
+### 问题
+
+`read` / `search` / `task list` / `context` 全都用**带前缀**的 id 展示（`t1` / `g1` / `r1`），
+但写操作 `task claim/done/drop/reopen`、`review resolve`、`flagstatus` 的 argparse 是 `type=int`，
+只收纯数字。子代理照着黑板显示的样子抄，就会撞上：
+
+```text
+argument id: invalid int value: 't1'   (exit 1)
+```
+
+实机验证里 worker 因此绕了一次弯。这是展示口径与输入口径不一致，不是子代理的问题。
+
+### Fixed
+
+- 新增 `record_id_type(prefix)`：argparse 类型工厂，**同时接受 `1` 与 `t1`**（大小写不敏感）。
+- 六个命令换用它：`task claim/done/drop/reopen`（`t`）、`review resolve`（`r`）、`flagstatus`（`g`）。
+- **前缀必须与命令匹配**：给 `task done` 传 `g1` 仍然 exit 2，不会静默当成另一条记录；
+  非数字（`abc` / `t` / `t1x`）同样 exit 2。报错信息说明期望格式。
+- 事件 payload 里的 `id` 仍是整数，与纯数字写法完全一致（有用例核对）。
+
+### Changed
+
+- `board/SKILL.md`：id 前缀段落补「写操作也接受带前缀 id」，并说明前缀必须匹配。
+
+### Added
+
+- `tests/test_board.py` 新增 `TestPrefixedIds`（11 个用例，总数 125 → **136**）：
+  六个命令各自接受前缀、大写前缀、纯数字回归、错前缀拒写且状态不变、非数字拒写、
+  前缀写法与数字写法写出同一条事件。
+
+### Migration
+
+无需迁移，纯输入放宽，旧写法（纯数字）行为不变。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests   # Ran 136 tests ... OK
+```
+
+**负向对照**：用 v1.9.1 的 `board.py` 跑新用例 → **9 failures**；
+通过的 2 个正是「纯数字仍可用」「非数字拒写」这两条既有行为。
+
+[1.9.2]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.9.2
+
+---
+
 ## [1.9.1] - 2026-11-16
 
 文档与实现一致性核对（额度改造四连发之后）。纯文档，升 patch。

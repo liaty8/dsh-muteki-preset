@@ -191,6 +191,8 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 id 前缀：`f`=fact/observation、`d`=deadend、`g`=flag、`t`=task、`r`=review、`a`=artifact。
 
+**写操作也接受带前缀的 id**：`task done t1` 等价于 `task done 1`，`task claim/drop/reopen t1`、`flagstatus g1`、`review resolve r1` 同理。前缀必须与命令匹配（给 task 传 `g1` 会 exit 2），不会静默当成另一条记录。照着 `task list` / `read` 显示的样子抄即可。
+
 ## 什么时候写
 
 - 拿到一个**可复用的**入口、凭据、原语、可读数据的通道 → 先跑 `artifact list` 找到刚才那次工具调用的证据 id，再 `fact --artifact`，写清怎么接着用、怎么确认它还活着。
