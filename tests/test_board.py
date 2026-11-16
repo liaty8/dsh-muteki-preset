@@ -197,5 +197,68 @@ class TestEventPersistence(BoardCase):
         self.assertEqual(len(self.event_kinds()), before)
 
 
+class TestReadAndSearch(BoardCase):
+    """A2：read 支持任务 id；search 覆盖 tasks / reviews。"""
+
+    def test_read_task_by_id(self) -> None:
+        self.board("task", "add", "复现登录注入", "--detail", "预期证据 + 停止边界", "--priority", "3")
+        proc = self.board("read", "t1")
+        self.assertIn("复现登录注入", proc.stdout)
+        self.assertIn("status: open", proc.stdout)
+        self.assertIn("priority: 3", proc.stdout)
+        self.assertIn("预期证据", proc.stdout)
+
+    def test_read_missing_task_returns_1(self) -> None:
+        self.board("read", "t999", expect=1)
+
+    def test_read_unknown_prefix_still_returns_2(self) -> None:
+        self.board("read", "z1", expect=2)
+
+    def test_read_other_prefixes_not_regressed(self) -> None:
+        aid = self.make_artifact()
+        self.board("fact", "入口", "可复用入口", "--artifact", aid)
+        self.board("deadend", "排除", "--tested", "范围", "--observed", "结果")
+        self.board("flag", "flag{test}", "--source", "响应")
+        self.board("review", "add", "--kind", "gap", "--note", "缺验证")
+        for rid, needle in (("f1", "入口"), ("d1", "排除"), ("g1", "flag{test}"), ("r1", "缺验证")):
+            proc = self.board("read", rid)
+            self.assertIn(needle, proc.stdout)
+
+    def test_search_hits_task_title_and_detail(self) -> None:
+        self.board("task", "add", "同主机端口侦察", "--detail", "用 bot 当 SSRF 代理")
+        proc = self.board("search", "SSRF")
+        self.assertIn("t1", proc.stdout)
+        proc2 = self.board("search", "端口侦察")
+        self.assertIn("t1", proc2.stdout)
+
+    def test_search_hits_review_note(self) -> None:
+        self.board("review", "add", "--kind", "challenge", "--target", "f1", "--note", "证据与结论对不上")
+        proc = self.board("search", "对不上")
+        self.assertIn("r1", proc.stdout)
+
+    def test_search_existing_tables_not_regressed(self) -> None:
+        aid = self.make_artifact()
+        self.board("fact", "反序列化入口", "node-serialize 可控", "--artifact", aid)
+        self.board("deadend", "原型污染无效", "--tested", "三种 payload", "--observed", "无差异")
+        self.board("flag", "flag{test}", "--source", "响应")
+        self.assertIn("f1", self.board("search", "反序列化").stdout)
+        self.assertIn("d1", self.board("search", "原型污染").stdout)
+        self.assertIn("g1", self.board("search", "flag{test}").stdout)
+
+    def test_search_respects_challenge_isolation(self) -> None:
+        self.board("use", "web-a")
+        self.board("task", "add", "甲题任务")
+        self.board("use", "web-b")
+        self.board("task", "add", "乙题任务")
+        # 当前题 web-b：只应命中乙题
+        proc = self.board("search", "题任务")
+        self.assertIn("乙题任务", proc.stdout)
+        self.assertNotIn("甲题任务", proc.stdout)
+        # --all 才跨题
+        proc_all = self.board("search", "题任务", "--all")
+        self.assertIn("甲题任务", proc_all.stdout)
+        self.assertIn("乙题任务", proc_all.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,45 @@
 
 ---
 
+## [1.0.16] - 2026-11-16
+
+对应路线图条目 **A2：`read` 不支持任务 id、`search` 不覆盖任务与复核**。
+
+### Fixed
+
+- **`board.py read t<id>` 不再报「未知前缀：t」**（此前 rc=2）。`cmd_read` 增加 `t` 前缀分支，
+  读取 `tasks` 表全部字段。人主导做题时「这条任务当时怎么收的」是高频查询，此前查不到。
+- **`board.py search` 现在覆盖 `tasks`（title / detail）与 `reviews`（kind / target / note）**，
+  此前只搜 facts / deadends / flags。检索仍按题隔离，`--all` 才跨题。
+
+### Changed
+
+- `board.py` 文档字符串与 `read` / `search` 的 `--help` 文案补上新覆盖范围。
+- `board/SKILL.md`：明确 `search` 覆盖五类记录、`read` 支持 `t2`，id 前缀表补 `t`=task、`r`=review。
+- 版本号同步到 `1.0.16`。
+
+### Added
+
+- `tests/test_board.py` 新增 `TestReadAndSearch`（8 个用例）：
+  读任务字段、读不存在任务 rc=1、未知前缀仍 rc=2、其余前缀不回归、
+  搜索命中任务标题与详情、搜索命中复核意见、原有三类记录不回归、搜索按题隔离与 `--all`。
+
+### Migration
+
+无需迁移：不涉及 schema 变更，旧库直接可用。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 44 tests ... OK
+python board/board.py read t1             # 输出任务全部字段
+python board/board.py --version           # muteki-board 1.0.16
+```
+
+[1.0.16]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.0.16
+
+---
+
 ## [1.0.15] - 2026-11-16
 
 > **版本号说明**：`v1.0.14` 已被先前的「安装修复 + 默认路径脱敏」release 占用（tag 指向 `9eb7a4a`），

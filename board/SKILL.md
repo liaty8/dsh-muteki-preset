@@ -140,7 +140,10 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 {{PYTHON}} {{BOARD}} stats
 ```
 
-id 前缀：`f`=fact/observation、`d`=deadend、`g`=flag、`a`=artifact。
+`search` 覆盖 fact / deadend / flag / **task / review**（按题隔离，`--all` 跨题）。
+`read` 支持 `f3` / `d2` / `g1` / `r1` / **`t2`** / `a<证据id>`，输出该条记录的全部字段。
+
+id 前缀：`f`=fact/observation、`d`=deadend、`g`=flag、`t`=task、`r`=review、`a`=artifact。
 
 ## 什么时候写
 

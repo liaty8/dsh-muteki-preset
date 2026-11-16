@@ -37,7 +37,7 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
     python board.py review resolve 1
     python board.py artifact list [--limit N] / artifact show <id>
     python board.py search "<关键词>" [--all]
-    python board.py read f3 / d2 / g1 / r1 / a1x2y3-8f2a
+    python board.py read f3 / d2 / g1 / r1 / t2 / a1x2y3-8f2a
     python board.py stats [--all]
 
 数据库默认在工作目录的 .muteki-board/board.db，可用 MUTEKI_BOARD_DB 覆盖；
@@ -56,7 +56,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.0.15"
+__version__ = "1.0.16"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -749,6 +749,8 @@ def cmd_search(args: argparse.Namespace) -> int:
         ("facts", "f", ("title", "content", "evidence")),
         ("deadends", "d", ("reason", "tested", "observed")),
         ("flags", "g", ("value", "source")),
+        ("tasks", "t", ("title", "detail")),
+        ("reviews", "r", ("kind", "target", "note")),
     ):
         clause = " OR ".join(f"{field} LIKE ?" for field in fields)
         rows = conn.execute(
@@ -782,6 +784,8 @@ def cmd_read(args: argparse.Namespace) -> int:
         row = conn.execute("SELECT * FROM flags WHERE id = ?", (int(number),)).fetchone()
     elif prefix == "r":
         row = conn.execute("SELECT * FROM reviews WHERE id = ?", (int(number),)).fetchone()
+    elif prefix == "t":
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (int(number),)).fetchone()
     else:
         print(f"未知前缀：{prefix}", file=sys.stderr)
         return 2
@@ -1128,12 +1132,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=cmd_artifact)
 
-    p = sub.add_parser("search", help="关键词检索黑板")
+    p = sub.add_parser("search", help="关键词检索黑板（fact/deadend/flag/task/review）")
     p.add_argument("query")
     p.add_argument("--all", action="store_true", help="跨全部题查看")
     p.set_defaults(func=cmd_search)
 
-    p = sub.add_parser("read", help="读取一条记录，如 f3 / d2 / g1 / r1 / a1x2")
+    p = sub.add_parser("read", help="读取一条记录，如 f3 / d2 / g1 / r1 / t2 / a1x2")
     p.add_argument("id")
     p.set_defaults(func=cmd_read)
 
