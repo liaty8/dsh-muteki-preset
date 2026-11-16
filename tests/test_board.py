@@ -583,6 +583,72 @@ class TestContextBudgetAndOrder(BoardCase):
             self.assertIn(key, data)
         self.assertEqual(len(data["deadends"]), 3)
 
+    # --- v1.5.2：截断提示行必须计入预算，输出不得超限 ---
+
+    def test_budget_output_never_exceeds_budget(self) -> None:
+        self._seed(deadends=30, facts=5)
+        for budget in (200, 250, 400, 800, 1200, 3000):
+            out = self.board("context", "--budget", str(budget)).stdout
+            self.assertLessEqual(
+                len(out), budget, msg=f"--budget {budget} 实际输出 {len(out)} 字符"
+            )
+
+    def test_budget_note_present_and_counted(self) -> None:
+        self._seed(deadends=30, facts=5)
+        out = self.board("context", "--budget", "250").stdout
+        self.assertIn("预算 250", out)
+        self.assertIn("截断", out)
+        self.assertLessEqual(len(out), 250)
+
+    def test_budget_note_matches_actual_output(self) -> None:
+        import re
+
+        headers = {
+            "flags": "## 已获得的 flag",
+            "deadends": "## 已排除的方向",
+            "facts": "## 已证实的事实",
+            "tasks": "## 任务队列",
+            "reviews": "## 待处理复核意见",
+            "observations": "## 未证实观察",
+            "claims": "## 进行中的认领",
+            "superseded": "## 已被推翻的旧结论",
+        }
+        self._seed(deadends=30, facts=5)
+        for budget in (250, 400, 800):
+            out = self.board("context", "--budget", str(budget)).stdout
+            named = re.search(r"「([a-z]+)」段被截断", out) or re.search(
+                r"预算 \d+ 用尽：([a-z]+) 截断", out
+            )
+            self.assertIsNotNone(named, msg=f"budget={budget} 没有截断提示：{out}")
+            omitted = re.search(r"未显示：([^；]+)", out) or re.search(r"未显示 ([^；]+)", out)
+            if omitted:
+                for name in [x.strip() for x in omitted.group(1).split(",")]:
+                    self.assertIn(name, headers)
+                    self.assertNotIn(
+                        headers[name], out,
+                        msg=f"budget={budget} 提示说 {name} 未显示，输出里却有",
+                    )
+
+    def test_tight_budget_degrades_header_not_silently(self) -> None:
+        # 测试工作区的临时路径很长，头部本身就吃掉大半预算：
+        # 这时必须显式压缩头部/提示，而不是悄悄超限或悄悄丢内容。
+        self._seed(deadends=30, facts=5)
+        out = self.board("context", "--budget", "250").stdout
+        self.assertLessEqual(len(out), 250)
+        self.assertTrue("头部已压缩" in out or "用尽：" in out, msg=out)
+
+    def test_tiny_budget_still_bounded(self) -> None:
+        self._seed(deadends=5, facts=2)
+        for budget in (1, 2, 40, 120):
+            out = self.board("context", "--budget", str(budget)).stdout
+            self.assertLessEqual(len(out), budget, msg=f"--budget {budget} 输出 {len(out)}")
+
+    def test_budget_fitting_content_has_no_note(self) -> None:
+        self._seed(deadends=1, facts=1)
+        out = self.board("context", "--budget", "6000").stdout
+        self.assertNotIn("预算", out)
+        self.assertLessEqual(len(out), 6000)
+
 
 class TestAdopt(BoardCase):
     """B4：归属迁移 + 空题提示（解决 legacy / 旧题数据孤儿）。"""

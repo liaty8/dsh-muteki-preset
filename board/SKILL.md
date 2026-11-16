@@ -100,7 +100,8 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 # 开工先读：flag、已证实事实、未证实观察、进行中的认领、已排除方向、任务队列、待处理复核
 {{PYTHON}} {{BOARD_PY}} context
 
-# 给子代理或上游消费时限定字符预算（超出按段落优先级截断并标注，不会静默丢内容）
+# 给子代理或上游消费时限定字符预算（输出总长含提示行与末尾换行，保证 ≤ N；不会静默丢内容）
+# 预算很小时会先压缩提示行、再压缩头部路径（标注「头部已压缩」），仍放不下才硬截留「…」；要全量用 --json
 {{PYTHON}} {{BOARD_PY}} context --budget 6000
 
 # 只看指定段落、自定义顺序（默认 flags,deadends,facts,tasks,reviews,observations,claims,superseded）

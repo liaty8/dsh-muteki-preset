@@ -60,7 +60,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -1014,39 +1014,97 @@ def cmd_context(args: argparse.Namespace) -> int:
     else:
         order = default_order
 
-    out = list(header)
     budget = int(getattr(args, "budget", 0) or 0)
-    used = sum(len(line) + 1 for line in out)
-    omitted: list[str] = []
-    truncated: str | None = None
-    for pos, name in enumerate(order):
-        chunk = sections.get(name)
-        if not chunk:
-            continue
-        lines = chunk + [""]
-        if not budget:
-            out.extend(lines)
-            used += sum(len(line) + 1 for line in lines)
-            continue
-        added = 0
-        for line in lines:
-            cost = len(line) + 1
-            if used + cost > budget:
-                break
-            out.append(line)
-            used += cost
-            added += 1
-        if added < len(lines):
-            truncated = name
-            omitted = [n for n in order[pos + 1:] if sections.get(n)]
-            break
-    if truncated:
-        out.append(
-            f"（预算 {budget} 字符已用尽：「{truncated}」段被截断"
-            + (f"，未显示：{', '.join(omitted)}" if omitted else "")
+
+    def note_for(pos: int, short: bool = False) -> str:
+        rest = [n for n in order[pos + 1 :] if sections.get(n)]
+        if short:
+            return (
+                f"（预算 {budget} 用尽：{order[pos]} 截断"
+                + (f"，未显示 {', '.join(rest)}" if rest else "")
+                + "；--json 取全量）"
+            )
+        return (
+            f"（预算 {budget} 字符已用尽：「{order[pos]}」段被截断"
+            + (f"，未显示：{', '.join(rest)}" if rest else "")
             + "；用 --section 调整优先级，或 --json 取全量）"
         )
-    print("\n".join(out).rstrip())
+
+    def fill(limit: int, head: list[str]) -> tuple[list[str], int | None]:
+        """按 limit 装填头部与各段，返回 (输出行, 第一个被截断的段下标)。"""
+        lines_out = list(head)
+        used = sum(len(line) + 1 for line in head)
+        cut: int | None = None
+        for pos, name in enumerate(order):
+            chunk = sections.get(name)
+            if not chunk:
+                continue
+            chunk_lines = chunk + [""]
+            if not limit:
+                lines_out.extend(chunk_lines)
+                used += sum(len(line) + 1 for line in chunk_lines)
+                continue
+            added = 0
+            for line in chunk_lines:
+                cost = len(line) + 1
+                if used + cost > limit:
+                    break
+                lines_out.append(line)
+                used += cost
+                added += 1
+            if added < len(chunk_lines):
+                cut = pos
+                break
+        return lines_out, cut
+
+    if not budget:
+        out, _ = fill(0, header)
+        print("\n".join(out).rstrip())
+        return 0
+
+    # 截断提示行本身也要算进预算（v1.5.1 之前它在核算之外追加，--budget 250
+    # 会实际输出 337 字符）。先按全额装填找到截断点，再为提示行预留空间重装，
+    # 直到「截断点 + 提示长度」收敛：预留只会让截断点前移、提示变长，单调收敛。
+    head = header
+    short_note = False
+    out, cut = fill(budget, head)
+    note: str | None = None
+    if cut is not None:
+        note = note_for(cut, short_note)
+        for _ in range(len(order) + 2):
+            head_cost = sum(len(line) + 1 for line in head)
+            limit = budget - (len(note) + 1)
+            if limit <= head_cost:
+                # 预算连「头部 + 提示」都放不下：先压缩提示，再压缩头部
+                if not short_note:
+                    short_note = True
+                    note = note_for(cut, short_note)
+                    continue
+                if head is header:
+                    head = [
+                        f"# Muteki 黑板 · {scope_note} · 预算 {budget} 字符"
+                        "（头部已压缩，路径见 --json）",
+                        "",
+                    ]
+                    note = note_for(cut, short_note)
+                    continue
+                break
+            new_out, new_cut = fill(limit, head)
+            out = new_out
+            if new_cut is None or new_cut == cut:
+                out.append(note)
+                note = None
+                break
+            cut = new_cut
+            note = note_for(cut, short_note)
+        if note is not None:
+            out.append(note)
+
+    text = "\n".join(out).rstrip()
+    if len(text) + 1 > budget:
+        # 兜底：极小预算（压缩头部 + 短提示仍放不下）只能硬截。+1 是 print 的换行。
+        text = (text[: max(0, budget - 2)] + "…") if budget >= 2 else ""
+    print(text)
     return 0
 
 
@@ -1633,7 +1691,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("context", help="打印当前黑板摘要")
     p.add_argument("--facts", type=int, default=12)
     p.add_argument("--deadends", type=int, default=12)
-    p.add_argument("--budget", type=int, default=0, help="字符预算，0=不限；超出时按 section 优先级截断并标注")
+    p.add_argument("--budget", type=int, default=0, help="字符预算，0=不限；输出总长（含截断提示行与末尾换行）不超过该值，按 section 优先级截断并标注")
     p.add_argument("--section", default=None, help="逗号分隔的段落顺序，如 deadends,facts,tasks；默认 flags,deadends,facts,tasks,reviews,observations,claims,superseded")
     p.add_argument("--json", action="store_true", help="输出结构化 JSON（供插件消费）")
     p.add_argument("--all", action="store_true", help="跨全部题查看")
