@@ -245,6 +245,12 @@ board.py context --all     # 跨题审计
 - 可选：[Claude Code CLI](https://code.claude.com/docs)（只有想用 `muteki_cli` 跨引擎异构时才需要）；
 - 可选：`git`（从本仓库克隆）。
 
+### 兼容性说明（重要）
+
+- 本预设按 **DSH 0.2.2-rc.3** 编成：`tool-agent-team` 行**必须 `disabled: true`**（rc.3 未发布 `agent-team` 包，缺 `agentTeams` 服务会让整个 muteki 预设「加载失败」）。模板已默认禁用；升级到含 agent-team 的 DSH 版本后可删掉该行。
+- `muteki-orchestrator` 用 **相对路径** `./muteki-orchestrator.mjs` 挂载，文件放 profile 根目录。**不要放 `node_modules`**：插件管理器会显示「已安装，未生效」，且 `pnpm install` 会把它移到 `node_modules\.ignored`。
+- 如果插件页仍显示「已安装，未生效」：那是插件管理器对「未声明 `dsh.bundle` 的普通依赖」的分类提示；只要预设能加载、会话里有 `muteki_*` 工具，功能就是正常的。
+
 ### 方式一：一键脚本（Windows PowerShell）
 
 ```powershell
@@ -256,7 +262,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 脚本会：
 
 1. 把 `board.py` + `SKILL.md`（替换成你的真实路径）装到 `$DSH_HOME\skills\muteki-board\`；
-2. 把插件装到 `<profile>\node_modules\@local\dsh-muteki-orchestrator\`；
+2. 把 `plugin-v13.mjs` 复制成 `<profile>\muteki-orchestrator.mjs`（**放 profile 根目录，不进 `node_modules`**，pnpm 不会移走它，插件页也不会误报「未生效」）；
 3. 把 `muteki-core.mjs` 放到 `<profile>\`；
 4. 生成 `preset-muteki.patch.yml`（已替换路径），**默认只输出文件**，并提示你把它追加到 profile 的 `cordis.patch.yml`。
 
@@ -278,10 +284,9 @@ Get-Content .\board\SKILL.md -Raw |
   ForEach-Object { $_ -replace '\{\{PYTHON\}\}', 'python' -replace '\{\{BOARD\}\}', "$env:DSH_HOME\skills\muteki-board\board.py" -replace '\{\{STORAGE\}\}', "$env:USERPROFILE\.dsh-muteki\artifacts" } |
   Set-Content "$env:DSH_HOME\skills\muteki-board\SKILL.md" -Encoding UTF8
 
-# 2) 插件
+# 2) 插件（放 profile 根目录，用相对路径挂载）
 $p = "$env:DSH_HOME\profiles\desktop"
-New-Item -ItemType Directory -Force "$p\node_modules\@local\dsh-muteki-orchestrator" | Out-Null
-Copy-Item .\plugins\dsh-muteki-orchestrator\* "$p\node_modules\@local\dsh-muteki-orchestrator\" -Force
+Copy-Item .\plugins\dsh-muteki-orchestrator\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 
 # 3) 把 preset\preset-muteki.patch.yml 里的 {{...}} 换成你的真实路径，
@@ -366,7 +371,9 @@ dsh-muteki-preset/
 | `muteki-core` | 任意会话里捕获工具结果、生成证据 id，配合 board.py 做证据门 | 无（只要 DSH） |
 | `muteki-orchestrator` | 任意预设里获得 `muteki_dispatch/tick/run/review/cli` 五个工具 | board.py（任务队列与 flag 检查） |
 
-挂载时注意两条硬约束：**必须放在 preset 的 `plugins` 内**（agent scope，否则 `UNAUTHORIZED`），**用包名 `@local/...` 引用**（不要相对路径）。各插件的详细安装步骤见它们目录下的 `README.md`。
+挂载时注意两条硬约束：**必须放在 preset 的 `plugins` 内**（agent scope，否则 `UNAUTHORIZED`），**用相对路径 `./muteki-orchestrator.mjs` 引用**（文件放 profile 根目录；这样不依赖 `node_modules`，pnpm 重装也不会把它移走）。各插件的详细安装步骤见它们目录下的 `README.md`。
+
+> **为什么不用 `@local/...` 包名？** 把本地插件放进 `node_modules` 时，插件管理器会把它当「普通依赖（未声明 `dsh.bundle`）」，显示「已安装，未生效」；而 `pnpm install` 看到它不在依赖树里，会把它移到 `node_modules\.ignored`。放 profile 根目录 + 相对路径可以同时绕开这两个坑。
 
 ---
 

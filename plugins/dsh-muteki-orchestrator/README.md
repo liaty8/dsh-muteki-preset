@@ -17,14 +17,13 @@
 插件必须放在 preset 的 `plugins` 列表内（agent scope），这样 `subagents.startActivation` 的 exact-live-parent 校验才能通过。
 
 ```powershell
-# 1) 复制到 profile 的 node_modules
+# 1) 复制到 profile 根目录（不进 node_modules：pnpm 不会移走，插件页也不会误报「未生效」）
 $p = "$env:DSH_HOME\profiles\desktop"
-New-Item -ItemType Directory -Force "$p\node_modules\@local\dsh-muteki-orchestrator" | Out-Null
-Copy-Item .\* "$p\node_modules\@local\dsh-muteki-orchestrator\" -Force
+Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 
-# 2) 在 preset 的 plugins 里加一行（用包名，不要用相对路径）
+# 2) 在 preset 的 plugins 里加一行（用相对路径）
 - id: muteki-orchestrator
-  name: '@local/dsh-muteki-orchestrator'
+  name: ./muteki-orchestrator.mjs
   config:
     python: 'python'
     boardPy: 'C:\Users\you\.dsh-muteki\board.py'

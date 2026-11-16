@@ -117,7 +117,7 @@
                   subagentProvider: spawn
                   maxRounds: 64
               - id: muteki-orchestrator
-                name: '@local/dsh-muteki-orchestrator'
+                name: ./muteki-orchestrator.mjs
                 config:
                   python: '{{PYTHON}}'
                   boardPy: '{{BOARD_PY}}'
@@ -130,6 +130,7 @@
                   enabled: true
           - id: tool-agent-team
             name: '@deepseek-ai/dsh-tool-agent-team'
+            disabled: true   # DSH 0.2.2-rc.3 未发布 agent-team 包，缺 agentTeams 服务会让整个 muteki 预设「加载失败」
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: tool-todo

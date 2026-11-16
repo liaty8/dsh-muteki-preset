@@ -34,7 +34,6 @@ if (-not (Test-Path $profileDir)) { throw "找不到 profile 目录：$profileDi
 if (-not $StorageDir) { $StorageDir = Join-Path $HOME ".dsh-muteki\artifacts" }
 $boardDir = Join-Path $DshHome "skills\muteki-board"
 $boardPy = Join-Path $boardDir "board.py"
-$orchDir = Join-Path $profileDir "node_modules\@local\dsh-muteki-orchestrator"
 $patchPath = Join-Path $profileDir "cordis.patch.yml"
 
 Write-Host "DSH_HOME : $DshHome"
@@ -57,12 +56,10 @@ $skill = $skill.Replace("{{PYTHON}}", $Python).Replace("{{BOARD}}", $boardPy).Re
 Set-Content -Path (Join-Path $boardDir "SKILL.md") -Value $skill -Encoding UTF8
 Write-Host "[1/4] 黑板已安装：$boardDir"
 
-# 2) 插件
-New-Item -ItemType Directory -Force $orchDir | Out-Null
-Copy-Item (Join-Path $root "plugins\dsh-muteki-orchestrator\package.json") $orchDir -Force
-Copy-Item (Join-Path $root "plugins\dsh-muteki-orchestrator\plugin-v13.mjs") $orchDir -Force
+# 2) 插件：直接放 profile 根目录，用相对路径挂载（不进 node_modules，pnpm install 不会移走）
+Copy-Item (Join-Path $root "plugins\dsh-muteki-orchestrator\plugin-v13.mjs") (Join-Path $profileDir "muteki-orchestrator.mjs") -Force
 Copy-Item (Join-Path $root "plugins\muteki-core\muteki-core.mjs") (Join-Path $profileDir "muteki-core.mjs") -Force
-Write-Host "[2/4] 插件已安装：$orchDir"
+Write-Host "[2/4] 插件已安装：$profileDir\muteki-orchestrator.mjs"
 
 # 3) 生成片段
 $tpl = Get-Content (Join-Path $root "preset\preset-muteki.patch.yml") -Raw
