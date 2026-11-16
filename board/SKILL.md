@@ -71,7 +71,24 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 **开局门槛**：拿到新题先 `board.py use <题名>` 切到干净题，再 `task add` 拆成至少 2 条有界 Step，然后 `muteki_run`；不要绕过队列自己单干到结束（只有队列空、收尾核对时可以自己做）。`muteki_run` 会自动切题并只认「开工后新出现的 flag」，所以上一题残留的 flag 不会让它一开工就误停。
 
-在 Muteki 蜂群预设下，`muteki_run` 是最省事的一个：给它轮数或分钟上限，它自动反复「取 open 任务 → 原子认领 → 派子代理 → 等这批完成 → 查黑板」，队列空、出现 flag、超时、额度用尽或**连续多轮无进展**（`stagnation`）就停，返回 `stoppedReason`、`quota` 明细（命中哪条看 `quota.limitHit`）、`resumeAt`（下一个令牌的时刻）、`waitedMs`、`overridden`、`stagnantRounds`。进展只认「新增带证据的 fact」或「新增 flag」，observation 与 deadend 不算；连续 `stagnationLimit` 轮（attended 5 / unattended 3，0=关闭）无进展会写一条 `review --kind gap` 并停下等人换思路——**这时不要原样重跑，先 `review list --status open` 看意见**。出现 flag 时会立即中断同批其余子代理（首解硬 cancel，不陪跑）。派单速率用**令牌桶**：`mode: attended`（人主导，默认）桶容量 60、按 40 次/小时回填，令牌不足时自动等（最多 10 分钟）；`mode: unattended`（无人值守）桶容量 12、按 12 次/小时回填，不足立即停、绝不等待。另有成本闸（attended $15/h、整题 $50；unattended $5/h、整题 $15）与整题派单总闸（attended 300 / unattended 100）。**整题总闸不随时间恢复、也不能被越过**，打满就 `task drop` 放弃它、`use` 切到新题（新题从满额度开始），或让人调高配置。人在看着且只是令牌不够时，可以带 `override_quota=true`（仅 attended）显式越过本轮速率限制，会往黑板写一条 observation 留痕；成本与总闸越不过去。
+在 Muteki 蜂群预设下，`muteki_run` 是最省事的一个：给它轮数或分钟上限，它自动反复「取 open 任务 → 原子认领 → 派子代理 → 等这批完成 → 查黑板」，直到队列空、出现 flag、超时、额度用尽或连续多轮无进展。出现 flag 时会立即中断同批其余子代理（首解硬 cancel，不陪跑）。
+
+返回值要看这几个字段：
+
+- `stoppedReason`：`empty` / `flag` / `timeout` / `budget` / `rounds` / `stagnation`；
+- `quota.limitHit`：命中哪条闸（`tokens` / `costPerHour` / `runsPerChallenge` / `costPerChallenge`）；
+- `resumeAt`：下一个令牌回填的时刻；`waitedMs`：本轮等过多久；
+- `stagnantRounds`：连续几轮没有新增带证据 fact / flag；
+- `overridden` / `overrideNote`：本轮是否显式越过速率限制、越过为什么没生效。
+
+额度规则（按题独立，`mode` 决定预设，显式配置优先）：
+
+- **派单速率用令牌桶**：`attended`（人主导，默认）桶容量 60、按 40 次/小时回填，令牌不足时自动等（最多 10 分钟）；`unattended`（无人值守）桶容量 12、按 12 次/小时回填，不足立即停、绝不等待。
+- **成本闸**：attended $15/小时、整题 $50；unattended $5/小时、整题 $15。**整题派单总闸**：attended 300 / unattended 100。
+- 每小时成本上限等窗口滚动就恢复；**整题总闸不随时间恢复、也不能被越过**——打满就 `task drop` 放弃该题、`use` 切到新题（新题从满额度开始），或让人调高配置。
+- 人在看着且只是令牌不够时，可带 `override_quota=true`（仅 attended）显式越过本轮速率限制，会往黑板写一条 observation 留痕；成本与总闸越不过去。
+
+**停滞熔断**：进展只认「新增带证据的 fact」或「新增 flag」，observation 与 deadend 不算。连续 `stagnationLimit` 轮（attended 5 / unattended 3，0=关闭）无进展会写一条 `review --kind gap` 并停下等人换思路——**这时不要原样重跑，先 `review list --status open` 看意见**，再决定换方向、换入口还是换 `muteki_cli` 异构打一遍。
 
 `muteki_tick` 只驱动一轮调度：从任务队列取最高优先级的 open 任务（limit 1-3），原子认领后各派一个全新上下文的子代理，立即返回。
 
@@ -86,7 +103,7 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 - 预期证据：看到什么算成功；
 - 停止边界：试到什么程度就停（次数、耗时、范围）。
 
-参数：`prompt`（必填）、`name`、`lane`（先认领资源，认领失败就不派单）、`lane_ttl`、`provider`/`model`/`reasoning_effort`（指定不同模型做异构竞速）、`cwd`（决定用哪个工作区黑板）。
+参数：`prompt`（必填）、`name`、`lane`（先认领资源，认领失败就不派单）、`lane_ttl`、`provider`/`model`/`reasoning_effort`（指定不同模型做异构竞速）、`cwd`（决定用哪个工作区黑板）、`override_quota`/`override_reason`（仅 attended，显式越过本轮派单速率限制并留痕；成本与整题总闸越不过去）。`muteki_tick` / `muteki_run` / `muteki_cli` 同样支持 `override_quota`。
 
 派单额度由 orchestrator 的 `mode` 决定预设（`attended` 桶容量 60、回填 40 次/小时、整题 300 次；`unattended` 桶容量 12、回填 12 次/小时、整题 100 次），显式配置的 `burstRuns` / `maxRunsPerHour` / `maxRunsPerChallenge` 优先，**按题独立**。令牌桶记在 `buckets.json`，整题累计记在 `totals.json`（不清理），每小时派单流水记在 `runs.json`（滚动窗口，供复盘）。子代理的启动/结束会记到 `{{STORAGE_DIR}}\subagents.jsonl`。
 

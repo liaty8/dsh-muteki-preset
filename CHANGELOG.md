@@ -8,6 +8,40 @@
 
 ---
 
+## [1.9.1] - 2026-11-16
+
+文档与实现一致性核对（额度改造四连发之后）。纯文档，升 patch。
+
+### Fixed
+
+- `README.md`
+  - 程序化派单表里 `muteki_run` 的停止条件还写着「队列空 / flag / 超时 / 达额度」，**漏了停滞熔断**；补全并列出 `stoppedReason` 六种取值与新增返回字段。
+  - `config.json` 示例里 `"version": "1.1.2"` 是几个版本前的死值（实际由 `install.ps1` 从 `package.json` 读取）→ 改成占位符并说明来源，避免再次腐化。
+  - `storageDir` 说明漏了 `buckets.json` / `overrides.jsonl`，且斜杠串写法会被敏感信息门禁误判成长 base64 串 → 改为逐个文件名。
+  - 「黑板常用命令」补齐 `context --budget/--section`、`flagstatus`、`adopt`、`artifact list`、`read`、`search`、`report`（`report` 是收束出口，之前只在 SKILL.md 里出现）。
+  - 顶部特性列表补「连续多轮无进展也会停下来找人」；使用步骤补第 6 条「离开电脑 / 挂定时任务改 `mode: unattended`」。
+  - 插件独立使用的依赖描述补上进展快照与 review 写回。
+- `plugins/dsh-muteki-orchestrator/README.md`
+  - 工具表里 run 的停止条件同样漏了停滞；
+  - `quota` 明细还写着「四个 used/cap」，与实际字段（tokens/burstRuns/onQuota/costBasis/…）不符 → 按实际返回列全。
+- `board/SKILL.md`
+  - `muteki_run` 那段在四个 release 里被反复追加，已经长成一大坨难读的长句 → 拆成「返回字段 / 额度规则 / 停滞熔断」三块；
+  - `muteki_dispatch` 参数列表补 `override_quota` / `override_reason`，并说明另外三个工具也支持。
+
+### 核对方式
+
+把 README 配置表与插件 `Config` schema 逐字段对照：**19 个字段完全一致**，无遗漏无多余。
+另全仓 grep 陈旧措辞（`12 次` / `$3` / `1.1.2` / `达额度` / `每小时派单上限`），确认剩下的命中都是**有意保留的历史描述**
+（CHANGELOG 旧条目、插件 README 里解释「为什么不用滚动窗口」的对比句）。
+
+### Migration
+
+无代码变更，无需迁移。`board.py` 与插件逻辑均与 1.9.0 相同。
+
+[1.9.1]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.9.1
+
+---
+
 ## [1.9.0] - 2026-11-16
 
 额度机制改造第 4 步（收尾）：**成本账本只记了一半，口径也没标**。新能力，升 minor。

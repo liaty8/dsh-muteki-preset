@@ -24,7 +24,7 @@
 - 所有结论写进一块**工作区级黑板**（SQLite 事实图），不是散落在聊天里；
 - 每条事实必须带**真实工具输出的证据 id**，没有证据只能记为 observation；
 - 主控先把题目拆成**有界任务**，再用程序化工具派给全新上下文的子代理；
-- 自动循环派单、首解即停、其余子代理立刻中断；
+- 自动循环派单、首解即停、其余子代理立刻中断；**连续多轮无进展也会停下来找人**，不空转烧额度；
 - 支持用**本地 Claude Code CLI** 跑跨引擎异构；
 - 派单次数与成本都**按题独立限额**，且分「人主导 / 无人值守」两套预设，另有**整题累计总闸**，一道题烧超了不会拖累下一道题。
 
@@ -217,11 +217,13 @@ board.py context --all     # 跨题审计
 |---|---|
 | `muteki_dispatch` | 手动派一个 Step（可先 claim 资源 lane） |
 | `muteki_tick` | 从任务队列取 1–3 条，批量派一轮 |
-| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 检查 flag → 直到队列空 / 出现 flag / 超时 / 达额度 |
+| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag / 查进展 → 直到队列空 / 出现 flag / 超时 / 额度用尽 / **连续多轮无进展** |
 | `muteki_review` | 起一个**只读** Reviewer 审图，意见写回 `review` |
 | `muteki_cli` | 把同类 Step 交给本地 Claude Code CLI（独立进程、异步、不占 DSH 子代理席位） |
 
 `muteki_run` 结束（含异常/中断）时会用 `finally` 把本轮没做完的任务释放回 `open`，不会留下假 `claimed`。
+返回值带 `stoppedReason`（`empty` / `flag` / `timeout` / `budget` / `rounds` / `stagnation`）、`quota` 明细、
+`resumeAt`（下一个令牌时刻）、`waitedMs`、`overridden`、`stagnantRounds`，停下来时能直接看出为什么停、什么时候能继续。
 
 ### 5. 首解硬 cancel
 
@@ -338,9 +340,11 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
   "board_py": "<你的 DSH home>\\skills\\muteki-board\\board.py",
   "storage_dir": "<你的证据目录>",
   "config_dir": "<配置目录>",
-  "version": "1.1.2"
+  "version": "<安装时从插件 package.json 读取>"
 }
 ```
+
+`version` 由 `install.ps1` 从 `plugins/dsh-muteki-orchestrator/package.json` 读取后写入，跟着 release 走，不用手填。
 
 `board.py` 按 **`MUTEKI_ARTIFACT_DIR` 环境变量 > `config.json` 的 `storage_dir` > 内置默认** 的顺序定位证据目录。
 这解决了「安装时自定义 `-StorageDir`，插件写到自定义目录、`board.py` 却去内置默认找索引」的分叉问题
@@ -365,23 +369,33 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 
 3. 想手动看单步：`muteki_tick`（一轮）或 `muteki_dispatch`（单个 Step）；
 4. 想审图：`muteki_review`；
-5. 想跨引擎对照：`muteki_cli`（需要本机已装并登录 Claude Code CLI）。
+5. 想跨引擎对照：`muteki_cli`（需要本机已装并登录 Claude Code CLI）；
+6. 要离开电脑 / 挂定时任务：把插件配置的 `mode` 改成 `unattended`——额度自动收紧、令牌不足不再等待、连续 3 轮无进展就停。回到屏幕前改回 `attended`。
 
 ### 黑板常用命令
 
 ```bash
-board.py context                 # 当前题全图
+board.py context                 # 当前题全图（死路在前、事实新→旧）
 board.py context --all           # 跨题审计
+board.py context --budget 6000   # 限定字符预算（含提示行，保证不超），喂子代理用
+board.py context --section deadends,facts,tasks   # 只看指定段落、自定义顺序
 board.py task add "验证 SQL 注入" --detail "..." --priority 3
 board.py task list --status open
 board.py task reopen 3           # 中断后释放卡住的任务
 board.py task reclaim --minutes 30
 board.py claim web-login --ttl 900 --note "登录接口"
-board.py fact "登录处存在注入" "..." --artifact aXXXX --evidence "..."
-board.py deadend "排除 XSS" --tested "..." --observed "..."
-board.py flag "flag{...}" --source "响应体 /debug"
+board.py fact "登录处存在注入" "..." --artifact aXXXX --quote "原文片段"
+board.py deadend "排除 XSS" --tested "..." --observed "..." --artifact aXXXX
+board.py flag "flag{...}" --source "响应体 /debug" --artifact aXXXX
+board.py flagstatus 1 --set accepted --verified-by "平台回显 correct"
+board.py adopt f1,d3,g1          # 把旧题/legacy 里属于本题的记录迁过来
 board.py review list --status open
+board.py artifact list --limit 20   # 查证据 id
+board.py read f3                 # 细读一条（f/d/g/t/r/a 前缀）
+board.py search "关键词"
 board.py stats
+board.py report                  # 收束复盘（Markdown，可直接贴 writeup）
+board.py report --json           # 供插件/CI 消费
 ```
 
 ---
@@ -426,7 +440,7 @@ dsh-muteki-preset/
 | 插件 | 单独用能做什么 | 依赖 |
 |---|---|---|
 | `muteki-core` | 任意会话里捕获工具结果、生成证据 id，配合 board.py 做证据门 | 无（只要 DSH） |
-| `muteki-orchestrator` | 任意预设里获得 `muteki_dispatch/tick/run/review/cli` 五个工具 | board.py（任务队列与 flag 检查） |
+| `muteki-orchestrator` | 任意预设里获得 `muteki_dispatch/tick/run/review/cli` 五个工具 | board.py（任务队列、flag 与进展快照、review 写回） |
 
 挂载时注意两条硬约束：**必须放在 preset 的 `plugins` 内**（agent scope，否则 `UNAUTHORIZED`），**用相对路径 `./muteki-orchestrator.mjs` 引用**（文件放 profile 根目录；这样不依赖 `node_modules`，pnpm 重装也不会把它移走）。各插件的详细安装步骤见它们目录下的 `README.md`。
 
@@ -440,7 +454,7 @@ dsh-muteki-preset/
 |---|---|---|
 | `python` | `python` | 调 `board.py` 用的解释器 |
 | `boardPy` | `~/.dsh-muteki/board.py` | `board.py` 路径 |
-| `storageDir` | `~/.dsh-muteki/artifacts` | 证据与 `runs/costs/totals/subagents/cli` 账本存放 |
+| `storageDir` | `~/.dsh-muteki/artifacts` | 证据与账本：`runs.json`、`costs.json`、`totals.json`、`buckets.json`、`overrides.jsonl`、`subagents.jsonl`、`cli.jsonl` |
 | `mode` | `attended` | `attended`=人主导（额度宽）；`unattended`=无人值守/定时任务（额度紧） |
 | `maxRunsPerHour` | 按 mode（40 / 12） | 派单令牌的每小时回填速率 |
 | `burstRuns` | 按 mode（60 / 12） | 令牌桶容量=开局可一次性派多少单 |

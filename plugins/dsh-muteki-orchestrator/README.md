@@ -8,7 +8,7 @@
 |---|---|---|
 | `muteki_dispatch` | 手动派一个 Step | `prompt`（必填）、`name`、`lane`、`lane_ttl`、`provider`、`model`、`reasoning_effort`、`cwd`、`override_quota`、`override_reason` |
 | `muteki_tick` | 从黑板任务队列取 1–3 条，批量派一轮 | `limit`（1–3）、`cwd`、`provider`、`model`、`override_quota` |
-| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag → 直到空/flag/超时/额度 | `limit`、`max_rounds`、`max_minutes`、`challenge`、`cwd`、`provider`、`model`、`override_quota`、`override_reason` |
+| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag / 查进展 → 直到空/flag/超时/额度/停滞 | `limit`、`max_rounds`、`max_minutes`、`challenge`、`cwd`、`provider`、`model`、`override_quota`、`override_reason` |
 | `muteki_review` | 起一个只读 Reviewer 审黑板，意见写回 review 表 | `cwd`、`focus` |
 | `muteki_cli` | 把 Step 交给本地 Claude Code CLI（独立进程、异步、不占子代理席位） | `prompt`、`cwd`、`timeout_minutes`（1–30）、`model`、`override_quota` |
 
@@ -83,7 +83,10 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 
 为什么要有整题总闸：每小时上限防的是「短时间失控」，但一道硬题连打八小时照样能烧穿预算——以前没有任何东西拦得住。`totals.json` 按题累计、跨小时不清零，切回旧题继续累计，换新题从 0 开始。
 
-`muteki_run` 的返回值带 `quota` 明细（mode、四个 used/cap、`limitHit`），`stoppedReason: "budget"` 时能直接看出命中的是哪一条。
+`muteki_run` 的返回值带 `quota` 明细（`mode`、`costBasis`、`tokens`/`burstRuns`/`runsPerHour`/`onQuota`/`maxWaitMinutes`、
+`runsHour`、`runsTotal`/`runsPerChallenge`、`costHour`/`costPerHour`、`costTotal`/`costPerChallenge`、`limitHit`），
+外加 `resumeAt`（下一个令牌回填时刻）、`waitedMs`、`overridden`、`overrideNote`、`stagnantRounds`。
+`stoppedReason: "budget"` 时看 `limitHit` 就知道命中的是哪一条闸。
 
 ## 成本口径
 
