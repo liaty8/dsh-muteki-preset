@@ -8,6 +8,56 @@
 
 ---
 
+## [1.2.0] - 2026-11-16
+
+对应路线图条目 **A6：证据门只验「存在」，不验「相关」**。新能力，升 minor。
+
+### 背景
+
+`verify_artifacts()` 只检查 id 在索引中且文件存在，**不检查证据内容是否支持该结论**。
+真实作战中 Reviewer 已指出：某条 fact 挂的两条 artifact 根本不含所声称的延时与堆栈证据。
+证据门能挡「凭空捏造 id」，挡不住「挂一个不相干的真实 id」——这是假事实进入事实区的第二条通道。
+
+### Added
+
+- **`fact --quote "<原文片段>"` / `deadend --quote "<原文片段>"`**（均可重复传参）：
+  要求片段真实出现在所引证据的 `content` 或 `value` 里。
+  - `fact` 未命中 → **降级为 observation**，stdout 明确写出未命中的片段与原因（rc=0，不中断流程）。
+  - `fact --quote` 但没有 `--artifact` → 记为 observation 并提示需配合证据。
+  - `deadend` 未命中或缺证据 → **拒写 exit 2**（死路必须是实测排除，不能靠推测）。
+- 新增 `parse_quotes()` / `artifact_texts()` / `missing_quotes()` 三个辅助函数。
+- `fact` / `deadend` 的事件 payload 增加 `quotes` 与 `quote_missing` 字段，便于复盘与 Reviewer 核对。
+- `tests/test_board.py` 新增 `TestQuoteRelevance`（10 个用例）：命中保持 fact、未命中降级、
+  多片段其一未命中、无证据时的提示、**不带 --quote 行为完全不变**、匹配 `value` 字段、
+  deadend 命中/未命中/缺证据、事件 payload 记录。
+- `BoardCase.make_artifact()` 支持 `value=` 参数，便于构造结构化输出证据。
+
+### Changed
+
+- `board/SKILL.md`：证据门小节补 `--quote` 语义与截断注意事项；命令示例补一条加强版 fact。
+- `board.py` 文档字符串补 `--quote` 用法。
+- 版本号同步到 `1.2.0`。
+
+### 兼容性（重要）
+
+- **默认强度不变**：不带 `--quote` 时，行为与 1.1.x 逐字一致（只校验 id 存在）。
+  这是刻意选择——相关性校验会增加写入摩擦，因此做成**可选增强**，而不是默认强制。
+- 不涉及 schema 变更，无需迁移。
+- 已知限制：证据超大被截断时（`muteki-core` 只保留前 4000 字符），落在截断部分的片段会校验不到。
+  完整输出落盘（sidecar）属路线图 C3，后续 release 处理。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 85 tests ... OK
+python scripts/check_sensitive.py         # rc=0
+python board/board.py --version           # muteki-board 1.2.0
+```
+
+[1.2.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.2.0
+
+---
+
 ## [1.1.2] - 2026-11-16
 
 对应路线图条目 **A3：安装时自定义证据目录会与 `board.py` 默认值分叉（release 阻塞级）**。

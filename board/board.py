@@ -22,9 +22,9 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
     python board.py use web-8080
     python board.py current
     python board.py context [--all]
-    python board.py fact "<标题>" "<增量结论>" --artifact a1x2y3-8f2a
+    python board.py fact "<标题>" "<增量结论>" --artifact a1x2y3-8f2a [--quote "原文片段"]
     python board.py fact "<标题>" "<尚未证实的观察>"
-    python board.py deadend "<原因>" --tested "<范围>" --observed "<结果>" [--artifact ID]
+    python board.py deadend "<原因>" --tested "<范围>" --observed "<结果>" [--artifact ID] [--quote "原文片段"]
     python board.py flag "<flag>" [--source "..."] [--artifact ID] [--status candidate]
     python board.py flagstatus 1 --set accepted --verified-by "平台回显 correct"
     python board.py task add "<标题>" --detail "..." --priority 3
@@ -58,7 +58,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.1.2"
+__version__ = "1.2.0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -396,6 +396,49 @@ def verify_artifacts(ids: list[str]) -> int:
     return 0
 
 
+def parse_quotes(args: argparse.Namespace) -> list[str]:
+    raw = getattr(args, "quote", None) or []
+    out: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def artifact_texts(ids: list[str]) -> dict[str, str]:
+    """读取证据文件里可搜索的文本（content + value 序列化）。读不到则为空串。"""
+    index = load_artifact_index()
+    texts: dict[str, str] = {}
+    for aid in ids:
+        entry = index.get(aid) or {}
+        file = str(entry.get("file") or "")
+        text = ""
+        if file:
+            try:
+                payload = json.loads(Path(file).read_text(encoding="utf-8", errors="replace"))
+                parts = []
+                content = payload.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+                value = payload.get("value")
+                if value is not None:
+                    parts.append(json.dumps(value, ensure_ascii=False))
+                text = "\n".join(parts)
+            except Exception:
+                text = ""
+        texts[aid] = text
+    return texts
+
+
+def missing_quotes(ids: list[str], quotes: list[str]) -> list[str]:
+    """A6：返回未在任何所引证据里命中的 quote（可选的相关性校验）。"""
+    if not quotes:
+        return []
+    blob = "\n".join(artifact_texts(ids).values())
+    return [q for q in quotes if q not in blob]
+
+
 def cmd_use(args: argparse.Namespace) -> int:
     conn = connect()
     name = str(args.name).strip()
@@ -422,6 +465,21 @@ def cmd_fact(args: argparse.Namespace) -> int:
     if code != 0:
         return code
     level = "fact" if artifacts else "observation"
+    quotes = parse_quotes(args)
+    quote_miss: list[str] = []
+    quote_note = ""
+    if quotes:
+        if not artifacts:
+            quote_note = "（--quote 需配合 --artifact；本条按观察记录）"
+        else:
+            quote_miss = missing_quotes(artifacts, quotes)
+            if quote_miss:
+                level = "observation"
+                quote_note = (
+                    "（--quote 未在证据中命中："
+                    + " / ".join(short(q, 60) for q in quote_miss)
+                    + "；已降级为观察）"
+                )
     if args.supersedes:
         old = conn.execute(
             "SELECT id FROM facts WHERE id = ? AND challenge = ?", (args.supersedes, ch)
@@ -461,15 +519,21 @@ def cmd_fact(args: argparse.Namespace) -> int:
             "evidence": args.evidence,
             "artifacts": artifacts,
             "supersedes": args.supersedes,
+            "quotes": quotes,
+            "quote_missing": quote_miss,
         },
     )
     conn.commit()
     if level == "fact":
-        print(f"f{new_id} 已记录（{ch}，证据 {', '.join(artifacts)}）：{short(args.title, 120)}")
-    else:
         print(
-            f"f{new_id} 已记录为观察（{ch}，无工具证据，不应当作结论传给下一步）："
-            f"{short(args.title, 120)}"
+            f"f{new_id} 已记录（{ch}，证据 {', '.join(artifacts)}）："
+            f"{short(args.title, 120)}{quote_note}"
+        )
+    else:
+        reason = "无工具证据" if not artifacts else "证据相关性校验未通过"
+        print(
+            f"f{new_id} 已记录为观察（{ch}，{reason}，不应当作结论传给下一步）："
+            f"{short(args.title, 120)}{quote_note}"
         )
     return 0
 
@@ -481,6 +545,23 @@ def cmd_deadend(args: argparse.Namespace) -> int:
     code = verify_artifacts(artifacts)
     if code != 0:
         return code
+    quotes = parse_quotes(args)
+    if quotes:
+        if not artifacts:
+            print(
+                "deadend --quote 需要配合 --artifact（死路必须是实测排除，不能只凭推测）",
+                file=sys.stderr,
+            )
+            return 2
+        missed = missing_quotes(artifacts, quotes)
+        if missed:
+            print(
+                "deadend --quote 未在证据中命中："
+                + " / ".join(short(q, 60) for q in missed)
+                + "；拒写（死路必须有实测证据支持）",
+                file=sys.stderr,
+            )
+            return 2
     cur = conn.execute(
         "INSERT INTO deadends (challenge, reason, tested, observed, artifacts, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
@@ -497,6 +578,7 @@ def cmd_deadend(args: argparse.Namespace) -> int:
             "tested": args.tested,
             "observed": args.observed,
             "artifacts": artifacts,
+            "quotes": quotes,
         },
     )
     conn.commit()
@@ -1226,6 +1308,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("content")
     p.add_argument("--evidence", default=None, help="文字依据（可选）")
     p.add_argument("--artifact", action="append", default=[], help="证据 id，可重复")
+    p.add_argument(
+        "--quote",
+        action="append",
+        default=[],
+        help="可选相关性校验：必须出现在所引证据里的原文片段，可重复；未命中则降级为观察",
+    )
     p.add_argument("--supersedes", type=int, default=None)
     p.set_defaults(func=cmd_fact)
 
@@ -1234,6 +1322,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tested", default=None)
     p.add_argument("--observed", default=None)
     p.add_argument("--artifact", action="append", default=[])
+    p.add_argument(
+        "--quote",
+        action="append",
+        default=[],
+        help="可选相关性校验：必须出现在所引证据里的原文片段；未命中则拒写（exit 2）",
+    )
     p.set_defaults(func=cmd_deadend)
 
     p = sub.add_parser("flag", help="记录 flag（可绑证据、可设状态）")

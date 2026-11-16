@@ -24,6 +24,10 @@ DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工�
 - id 不存在或对应文件丢了 → board.py 直接拒写（退出码 2）；
 - 不带 `--artifact` → 记为 observation，`context` 会把它单独列在「未证实观察」，提醒不要当结论；
 - 一个结论可以挂多个 `--artifact`（重复传参或空格/逗号分隔）。
+- **可选相关性校验 `--quote "<原文片段>"`**（可重复）：要求该片段真实出现在所引证据的内容里。
+  `fact` 未命中 → **降级为 observation** 并说明原因；`deadend` 未命中 → **拒写（exit 2）**，因为死路必须是实测排除。
+  不带 `--quote` 时行为与旧版完全一致（只校验 id 存在）。注意：证据被截断时（超大输出），
+  落在截断部分的片段会校验不到——这时改用更靠前的片段，或等完整输出落盘能力（路线图 C3）。
 
 证据库目录优先级：`MUTEKI_ARTIFACT_DIR` 环境变量 > 安装配置 `~/.dsh-muteki/config.json` 的 `storage_dir` > 内置默认 `~/.dsh-muteki/artifacts`。索引文件为该目录下的 `index.jsonl`，**必须与 muteki-core 插件的 `artifactDir` 一致**，否则证据门找不到 id。配置文件由 `install.ps1` 生成，可用 `MUTEKI_CONFIG` 指向别处。
 
@@ -121,6 +125,9 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 # 记一条带证据的事实（只写本步增量，不复述已知内容）
 {{PYTHON}} {{BOARD_PY}} fact "标题一句话" "增量结论 + 适用范围" --artifact a1x2y3z4-8f2a --evidence "补充说明（可选）"
+
+# 加强版：要求结论的关键原文真的出现在证据里（未命中会自动降级为观察）
+{{PYTHON}} {{BOARD_PY}} fact "延时注入成立" "sleep 6 实测 6.13s" --artifact a1x2y3z4-8f2a --quote "time=6.127874"
 
 # 还没证实的推测：不带 --artifact，会记为 observation
 {{PYTHON}} {{BOARD_PY}} fact "待验证" "目前只看到 X，不能确认 Y"

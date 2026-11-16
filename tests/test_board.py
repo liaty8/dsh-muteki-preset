@@ -79,16 +79,16 @@ class BoardCase(unittest.TestCase):
     def event_kinds(self) -> list[str]:
         return [row[0] for row in self.query("SELECT kind FROM events ORDER BY id")]
 
-    def make_artifact(self, aid: str = "atest0001-000000", content: str = "hello") -> str:
+    def make_artifact(self, aid: str = "atest0001-000000", content: str = "hello", value=None) -> str:
         """伪造一条 muteki-core 证据（索引 + 文件），用于证据门测试。"""
         import json
 
         file = self.artifacts / "artifacts" / f"{aid}.json"
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(
-            json.dumps({"id": aid, "tool": "pwsh", "ok": True, "content": content}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        payload = {"id": aid, "tool": "pwsh", "ok": True, "content": content}
+        if value is not None:
+            payload["value"] = value
+        file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         index = self.artifacts / "index.jsonl"
         with index.open("a", encoding="utf-8") as handle:
             handle.write(
@@ -441,6 +441,76 @@ class TestArtifactDirConfig(BoardCase):
         aid = self.put_artifact(self.custom)
         self.board("fact", "入口", "内容", "--artifact", aid)
         self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+
+
+class TestQuoteRelevance(BoardCase):
+    """A6：可选的证据相关性校验 --quote（默认不启用，行为向后兼容）。"""
+
+    def test_quote_hit_stays_fact(self) -> None:
+        aid = self.make_artifact(content="HTTP/1.1 200 OK\r\nX-Trace-Id: trace-9f2a\r\n")
+        self.board("fact", "入口", "响应带追踪头", "--artifact", aid, "--quote", "X-Trace-Id: trace-9f2a")
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+
+    def test_quote_miss_downgrades_to_observation(self) -> None:
+        aid = self.make_artifact(content="HTTP/1.1 200 OK")
+        proc = self.board(
+            "fact", "RCE 成立", "反序列化可执行命令", "--artifact", aid, "--quote", "node-serialize"
+        )
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "observation")
+        self.assertIn("未在证据中命中", proc.stdout)
+        self.assertIn("降级为观察", proc.stdout)
+
+    def test_multiple_quotes_one_miss_downgrades(self) -> None:
+        aid = self.make_artifact(content="sleep 6 → time=6.127874")
+        self.board(
+            "fact", "延时注入", "可延时", "--artifact", aid,
+            "--quote", "time=6.127874", "--quote", "server.js:28",
+        )
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "observation")
+
+    def test_quote_without_artifact_is_observation(self) -> None:
+        proc = self.board("fact", "推测", "内容", "--quote", "anything")
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "observation")
+        self.assertIn("--quote 需配合 --artifact", proc.stdout)
+
+    def test_no_quote_behavior_unchanged(self) -> None:
+        aid = self.make_artifact(content="totally unrelated output")
+        self.board("fact", "入口", "结论", "--artifact", aid)
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+
+    def test_quote_matches_value_field(self) -> None:
+        aid = self.make_artifact(content="", value={"stdout": "uid=0(root) gid=0(root)"})
+        self.board("fact", "root", "拿到 root", "--artifact", aid, "--quote", "uid=0(root)")
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+
+    def test_deadend_quote_hit_recorded(self) -> None:
+        aid = self.make_artifact(content="3 种 payload 全部 5826B 无差异")
+        self.board(
+            "deadend", "原型污染无效", "--tested", "三种 payload", "--observed", "无差异",
+            "--artifact", aid, "--quote", "无差异",
+        )
+        self.assertEqual(self.query("SELECT COUNT(*) FROM deadends")[0][0], 1)
+
+    def test_deadend_quote_miss_rejected(self) -> None:
+        aid = self.make_artifact(content="200 OK")
+        self.board(
+            "deadend", "注入无效", "--tested", "x", "--observed", "y",
+            "--artifact", aid, "--quote", "SQL syntax error", expect=2,
+        )
+        self.assertEqual(self.query("SELECT COUNT(*) FROM deadends")[0][0], 0)
+
+    def test_deadend_quote_without_artifact_rejected(self) -> None:
+        self.board("deadend", "排除", "--quote", "anything", expect=2)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM deadends")[0][0], 0)
+
+    def test_quote_recorded_in_event(self) -> None:
+        import json
+
+        aid = self.make_artifact(content="marker-xyz")
+        self.board("fact", "入口", "内容", "--artifact", aid, "--quote", "marker-xyz")
+        payload = json.loads(self.query("SELECT payload FROM events WHERE kind='fact'")[0][0])
+        self.assertEqual(payload["quotes"], ["marker-xyz"])
+        self.assertEqual(payload["quote_missing"], [])
 
 
 if __name__ == "__main__":
