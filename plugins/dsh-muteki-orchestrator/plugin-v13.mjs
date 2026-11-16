@@ -1051,7 +1051,11 @@ ${contextText}
             `派发 ${value.dispatched.length} 个子代理` +
             (value.flags.length ? `，本轮新 flag：${value.flags.join(", ")}` : "") +
             (value.waitedMs ? `，等令牌 ${Math.round(value.waitedMs / 1000)}s` : "") +
-            (value.overridden ? "，本轮显式越过速率限制（已留痕）" : "") +
+            (value.overrideRequested
+              ? value.overridden
+                ? "，人工授权已越过速率限制（已留痕）"
+                : "，人工授权已留痕（本轮令牌充足，未实际放宽）"
+              : "") +
             (value.stagnantRounds ? `，连续 ${value.stagnantRounds} 轮无新增 fact/flag` : "") +
             (value.stoppedReason === "stagnation"
               ? "\n已写一条 review（kind=gap）：先 board.py review list --status open 看意见，再决定换方向还是换引擎，不要原样重跑。"

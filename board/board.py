@@ -468,7 +468,50 @@ def cmd_current(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fact_list(args: argparse.Namespace) -> int:
+    """列出事实与观察。
+
+    worker 习惯敲 `fact list`（以前报「required: content」）；这里给出正式实现，
+    并显式标出级别——fact 与 observation 共用 f 前缀，不标级别很容易看混。
+    """
+    conn = connect()
+    ch = current_challenge(conn)
+    all_flag = bool(getattr(args, "all", False))
+    cond, params = _scope(conn, all_flag)
+    level = str(getattr(args, "level", "all") or "all")
+    level_cond = "" if level == "all" else " AND level = ?"
+    level_params = [] if level == "all" else [level]
+    rows = conn.execute(
+        f"SELECT * FROM facts WHERE superseded_by IS NULL{level_cond}{cond} ORDER BY id DESC",
+        level_params + params,
+    ).fetchall()
+    if getattr(args, "json", False):
+        print(json.dumps([dict(row) for row in rows], ensure_ascii=False))
+        return 0
+    print(f"# 事实与观察（{'全部题' if all_flag else ch}，level={level}，新→旧）")
+    if not rows:
+        print("（空）")
+        return 0
+    for row in rows:
+        arts = json.loads(row["artifacts"] or "[]")
+        mark = "事实" if row["level"] == "fact" else "观察"
+        print(
+            f"- f{row['id']} [{mark}] {row['title']}"
+            f"（题 {row['challenge']}，证据 {len(arts)} 条）"
+        )
+    print("（观察不能当结论传给下一步；细读用 read f<id>，跨题用 --all）")
+    return 0
+
+
 def cmd_fact(args: argparse.Namespace) -> int:
+    if str(args.title or "").strip().lower() == "list" and args.content is None:
+        return cmd_fact_list(args)
+    if not args.title or args.content is None:
+        print(
+            '用法：fact "<标题>" "<结论>" [--artifact ID]；列出已有事实与观察用 fact list',
+            file=sys.stderr,
+        )
+        return 2
     conn = connect()
     ch = current_challenge(conn)
     artifacts = parse_artifacts(args)
@@ -1123,14 +1166,18 @@ def cmd_search(args: argparse.Namespace) -> int:
         ("reviews", "r", ("kind", "target", "note")),
     ):
         clause = " OR ".join(f"{field} LIKE ?" for field in fields)
+        extra = ", level" if table == "facts" else ""
         rows = conn.execute(
-            f"SELECT id, {', '.join(fields)} FROM {table} "
+            f"SELECT id, {', '.join(fields)}{extra} FROM {table} "
             f"WHERE ({clause}){cond} ORDER BY id DESC LIMIT 20",
             [like] * len(fields) + params,
         ).fetchall()
         for row in rows:
             values = [row[field] or "" for field in fields]
-            print(f"- {prefix}{row['id']} {short(' | '.join(values), 220)}")
+            mark = ""
+            if table == "facts":
+                mark = " [观察]" if row["level"] == "observation" else " [事实]"
+            print(f"- {prefix}{row['id']}{mark} {short(' | '.join(values), 220)}")
     return 0
 
 
@@ -1205,7 +1252,8 @@ def cmd_task(args: argparse.Namespace) -> int:
             print(json.dumps([dict(row) for row in rows], ensure_ascii=False))
             return 0
         if not rows:
-            print(f"（没有 {args.status} 任务，题 {ch}）")
+            hint = "" if args.status == "all" else "；查已完成用 --status all，跨题用 --all"
+            print(f"（没有 {args.status} 任务，题 {ch}{hint}）")
             return 0
         for row in rows:
             owner = f"  归 {row['owner']}" if row["owner"] else ""
@@ -1327,7 +1375,8 @@ def cmd_review(args: argparse.Namespace) -> int:
             print(json.dumps([dict(row) for row in rows], ensure_ascii=False))
             return 0
         if not rows:
-            print(f"（没有 {args.status} 复核意见，题 {ch}）")
+            hint = "" if args.status == "all" else "；查已关闭用 --status all，跨题用 --all"
+            print(f"（没有 {args.status} 复核意见，题 {ch}{hint}）")
             return 0
         for row in rows:
             target = f" → {row['target']}" if row["target"] else ""
@@ -1734,11 +1783,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("open", "claimed", "done", "dropped", "all"),
     )
     q.add_argument("--json", action="store_true")
-    q.add_argument("--all", action="store_true", help="跨全部题查看")
+    q.add_argument("--all", "--all-challenges", dest="all", action="store_true",
+                   help="跨全部题查看（不是「含 done」；查已完成用 --status all）")
     q.set_defaults(func=cmd_task)
     q = task_sub.add_parser("claim", help="原子认领一个 open 任务")
     q.add_argument("id", type=record_id_type("t"), help="任务 id：1 或 t1")
-    q.add_argument("--owner", default=None)
+    q.add_argument("--owner", "--as", dest="owner", default=None, help="认领者名字（--as 是别名）")
     q.set_defaults(func=cmd_task)
     q = task_sub.add_parser("done", help="把任务标记完成")
     q.add_argument("id", type=record_id_type("t"), help="任务 id：1 或 t1")
@@ -1768,15 +1818,19 @@ def build_parser() -> argparse.ArgumentParser:
     q = review_sub.add_parser("list", help="列出复核意见")
     q.add_argument("--status", default="open", choices=("open", "resolved", "all"))
     q.add_argument("--json", action="store_true")
-    q.add_argument("--all", action="store_true", help="跨全部题查看")
+    q.add_argument("--all", "--all-challenges", dest="all", action="store_true",
+                   help="跨全部题查看（不是「含 done」；查已完成用 --status all）")
     q.set_defaults(func=cmd_review)
     q = review_sub.add_parser("resolve", help="关闭一条复核意见")
     q.add_argument("id", type=record_id_type("r"), help="复核 id：1 或 r1")
     q.set_defaults(func=cmd_review)
 
-    p = sub.add_parser("fact", help="记录一条事实（无 --artifact 时记为观察）")
-    p.add_argument("title")
-    p.add_argument("content")
+    p = sub.add_parser("fact", help="记录一条事实（无 --artifact 时记为观察）；fact list 列出事实与观察")
+    p.add_argument("title", nargs="?", default=None)
+    p.add_argument("content", nargs="?", default=None)
+    p.add_argument("--level", default="all", choices=("fact", "observation", "all"), help="fact list 时按级别过滤")
+    p.add_argument("--all", action="store_true", help="fact list 时跨全部题")
+    p.add_argument("--json", action="store_true", help="fact list 时输出 JSON")
     p.add_argument("--evidence", default=None, help="文字依据（可选）")
     p.add_argument("--artifact", action="append", default=[], help="证据 id，可重复")
     p.add_argument(

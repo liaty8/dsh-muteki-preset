@@ -179,6 +179,7 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 # 检索 / 细读 / 统计
 {{PYTHON}} {{BOARD_PY}} search "关键词"
 {{PYTHON}} {{BOARD_PY}} read f3
+{{PYTHON}} {{BOARD_PY}} fact list                 # 列出事实与观察（显式标 [事实]/[观察]；--level fact 只看事实）
 {{PYTHON}} {{BOARD_PY}} stats
 
 # 复盘报告：默认 Markdown（可直接贴 writeup），--json 供插件消费；--challenge / --all 指定范围

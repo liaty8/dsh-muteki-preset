@@ -609,6 +609,23 @@ test("override: run 区分「请求过授权」与「真的放宽了」", { skip
   });
 });
 
+test("run: 文本渲染把「请求过授权」与「真的放宽了」都说清楚", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: { burstRuns: 100, maxRunsPerHour: 100 } }, async (h) => {
+    h.board(["use", "t-render"]);
+    h.seedTask("任务一");
+    const out = await h.call("muteki_run", {
+      challenge: "t-render", limit: 1, max_rounds: 2,
+      override_quota: true, override_reason: "渲染验证",
+    });
+    const tool = h.tools.get("muteki_run");
+    const text = tool.output.render({}, out).map((x) => x.text).join("\n");
+    assert.match(text, /人工授权已留痕（本轮令牌充足，未实际放宽）/);
+    assert.match(text, /成本口径 estimate/);
+    assert.equal(out.overrideRequested, true);
+    assert.equal(out.overridden, false);
+  });
+});
+
 test("cost: DSH worker 结束后按墙钟估算入账，并归到正确的题", { skip: SKIP_REASON }, async () => {
   await withHarness(
     { config: { workerUsdPerMinute: 6 }, workerDelayMs: 120 },

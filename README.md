@@ -392,6 +392,7 @@ board.py adopt f1,d3,g1          # 把旧题/legacy 里属于本题的记录迁�
 board.py review list --status open
 board.py artifact list --limit 20   # 查证据 id
 board.py read f3                 # 细读一条（f/d/g/t/r/a 前缀）
+board.py fact list               # 列出事实与观察（标 [事实]/[观察]；--level fact 只看事实）
 board.py search "关键词"
 board.py stats
 board.py report                  # 收束复盘（Markdown，可直接贴 writeup）

@@ -1014,5 +1014,92 @@ class TestPrefixedIds(BoardCase):
         self.assertEqual(json.loads(rows[0][0])["id"], 1)
 
 
+class TestUsabilityFixes(BoardCase):
+    """v1.11.0：实机验证里 worker 绕弯的四个用法问题。"""
+
+    def _seed(self) -> None:
+        aid = self.make_artifact()
+        self.board("fact", "带证据的结论", "可复用", "--artifact", aid)
+        self.board("fact", "还没证实的推测", "只是看到")
+        self.board("task", "add", "任务一")
+
+    def test_fact_list_marks_level(self) -> None:
+        self._seed()
+        out = self.board("fact", "list").stdout
+        self.assertIn("f1 [事实]", out)
+        self.assertIn("f2 [观察]", out)
+        self.assertIn("观察不能当结论", out)
+
+    def test_fact_list_level_filter(self) -> None:
+        self._seed()
+        out = self.board("fact", "list", "--level", "fact").stdout
+        self.assertIn("f1 [事实]", out)
+        self.assertNotIn("f2", out)
+        obs = self.board("fact", "list", "--level", "observation").stdout
+        self.assertIn("f2 [观察]", obs)
+        self.assertNotIn("f1", obs)
+
+    def test_fact_list_json(self) -> None:
+        import json
+
+        self._seed()
+        data = json.loads(self.board("fact", "list", "--json").stdout)
+        self.assertEqual(len(data), 2)
+        self.assertEqual({row["level"] for row in data}, {"fact", "observation"})
+
+    def test_fact_list_respects_challenge(self) -> None:
+        self._seed()
+        self.board("use", "other")
+        self.assertEqual(self.board("fact", "list").stdout.count("- f"), 0)
+        self.assertIn("f1", self.board("fact", "list", "--all").stdout)
+
+    def test_fact_missing_args_points_to_list(self) -> None:
+        proc = self.board("fact", expect=2)
+        self.assertIn("fact list", proc.stderr)
+        proc = self.board("fact", "只有标题", expect=2)
+        self.assertIn("fact list", proc.stderr)
+
+    def test_fact_titled_list_still_records(self) -> None:
+        self.board("fact", "list", "这是一条标题叫 list 的结论")
+        # fact list 只显示标题，正文用 read / 直接查库核对
+        out = self.board("fact", "list").stdout
+        self.assertIn("- f1 [观察] list", out)
+        self.assertEqual(
+            self.query("SELECT content FROM facts WHERE id=1")[0][0],
+            "这是一条标题叫 list 的结论",
+        )
+
+    def test_task_claim_as_alias(self) -> None:
+        self._seed()
+        self.board("task", "claim", "t1", "--as", "worker-a")
+        self.assertEqual(self.query("SELECT owner FROM tasks WHERE id=1")[0][0], "worker-a")
+
+    def test_task_list_empty_hints_status_all(self) -> None:
+        self._seed()
+        self.board("task", "done", "1")
+        out = self.board("task", "list").stdout
+        self.assertIn("--status all", out)
+        self.assertIn("t1", self.board("task", "list", "--status", "all").stdout)
+
+    def test_all_challenges_alias(self) -> None:
+        self._seed()
+        self.board("use", "other")
+        self.board("task", "add", "别题任务")
+        out = self.board("task", "list", "--status", "all", "--all-challenges").stdout
+        self.assertIn("任务一", out)
+        self.assertIn("别题任务", out)
+
+    def test_review_list_empty_hint(self) -> None:
+        out = self.board("review", "list").stdout
+        self.assertIn("--status all", out)
+
+    def test_search_marks_observation(self) -> None:
+        self._seed()
+        out = self.board("search", "结论").stdout
+        self.assertIn("[事实]", out)
+        obs = self.board("search", "推测").stdout
+        self.assertIn("[观察]", obs)
+
+
 if __name__ == "__main__":
     unittest.main()
