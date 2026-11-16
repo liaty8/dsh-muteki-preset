@@ -47,6 +47,7 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 | `burstRuns` | 按 mode | **令牌桶容量**=开局可一次性派多少单；attended 60 / unattended 12 |
 | `onQuota` | 按 mode | `muteki_run` 令牌不足时 `wait`（等回填）/ `stop`（立即停）；attended wait / unattended stop |
 | `maxWaitMinutes` | 按 mode | `onQuota=wait` 时单次最长等待分钟数；attended 10 / unattended 0 |
+| `stagnationLimit` | 按 mode | 连续多少轮无新增带证据 fact/flag 就停并写 review gap；attended 5 / unattended 3；**0=关闭** |
 | `maxCostUsdPerHour` | 按 mode | **每题**每小时成本上限（美元，估算口径）；attended 15 / unattended 5 |
 | `maxRunsPerChallenge` | 按 mode | **整题累计**派单总闸，不随小时重置；attended 300 / unattended 100 |
 | `maxCostUsdPerChallenge` | 按 mode | **整题累计**成本总闸（美元）；attended 50 / unattended 15 |
@@ -82,6 +83,18 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 `muteki_run` 的返回值带 `quota` 明细（mode、四个 used/cap、`limitHit`），`stoppedReason: "budget"` 时能直接看出命中的是哪一条。
 
 成本口径提醒：`costs.json` 里的美元来自 Claude Code 按 **Anthropic 标价**的估算，接 DeepSeek 后端时实际账单低一个数量级；DSH 子代理的花费目前尚未计入（见路线图）。
+
+## 停滞熔断
+
+硬题真正的风险不是派单多，是**同一条死路换个说法反复试**。次数上限只能间接拦，代价是把有效工作一起拦了。所以 `muteki_run` 每轮结束后直接测进展：
+
+- 进展 = 「最新**带证据** fact 的 id 前进」或「flag 条数增加」；
+- **observation 与 deadend 不算进展**（排除方向有价值，但连续几轮只在排除方向，说明该换入口了）；
+- 连续 `stagnationLimit` 轮无进展 → `stoppedReason: "stagnation"`，并写一条 `review --kind gap`，
+  提示人工核对 deadend 覆盖面、是否缺入口/凭据/原语、或换 `muteki_cli` 异构打一遍；
+- `stagnationLimit: 0` 关闭熔断；返回值里的 `stagnantRounds` 始终如实计数。
+
+首解优先：flag 一出现就按 `flag` 收束，不会被误判成停滞。
 
 ## 依赖
 

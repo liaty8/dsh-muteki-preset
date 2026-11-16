@@ -8,6 +8,56 @@
 
 ---
 
+## [1.8.0] - 2026-11-16
+
+额度机制改造第 3 步：**硬题该被「没进展」拦，不该被「次数」拦**。新能力，升 minor。
+
+### 问题
+
+棘手题真正的风险不是派单多，是**同一条死路换个说法反复试**。以前只能靠次数上限间接拦，
+代价是把有效工作一起拦了；而额度放宽之后（1.6.0 / 1.7.0），这种空转可以持续更久、烧更多钱。
+
+### Added
+
+- **停滞熔断**：`muteki_run` 每轮结束后比较进展快照——
+  - 进展 = 「最新**带证据** fact 的 id 前进」或「flag 条数增加」；
+  - **observation 与 deadend 不算进展**（排除方向有价值，但连续几轮只在排除方向说明该换入口了）；
+  - 连续 `stagnationLimit` 轮无进展 → `stoppedReason: "stagnation"`，并写一条
+    `review --kind gap`，提示核对 deadend 覆盖面、是否缺入口/凭据/原语、或换 `muteki_cli` 异构打一遍。
+- **`stagnationLimit` 配置**：attended **5** / unattended **3**，**0 = 关闭**；显式值优先于预设。
+- **`muteki_run` 返回 `stagnantRounds`**（始终如实计数，即使熔断关闭）；render 文本显示
+  「连续 N 轮无新增 fact/flag」，并在 stagnation 时提示「先看 review list，不要原样重跑」。
+- 新增 `progressSnapshot(cwd)`：复用 `context --json`（facts 按 id DESC，`max(id)` 即全题最新 fact id），
+  不额外增加黑板命令种类。
+- 插件测试 +6（26 → **32**）：触发熔断并写 review gap、每轮有新 fact 则不熔断、
+  只写 observation 不算进展、只写 deadend 不算进展、`limit=0` 关闭、**首解优先于停滞判定**。
+
+### Changed
+
+- `muteki_run` 的停止条件从「空 / flag / 超时 / 额度」扩展为「空 / flag / 超时 / 额度 / **停滞**」。
+- `preset-muteki.patch.yml` 的 config 注释与 **persona** 同步：撞上停滞先读 review 意见再决定下一步。
+- `README.md`、`board/SKILL.md`、插件 README（新增「停滞熔断」一节）。
+
+### Migration
+
+无黑板 schema 变更（复用既有 `review` 表）。默认即生效；不想要就设 `stagnationLimit: 0`。
+插件覆盖后需重启 DSH。
+
+### 验证
+
+```bash
+DSH_NODE_MODULES=<profile>/node_modules node --test tests/test_orchestrator.mjs   # 32 pass
+python -m unittest discover -s tests                                             # Ran 125 tests ... OK
+```
+
+另修掉一个**测试自身的竞态**：unattended「立即停并给 resumeAt」用例原先把回填速率设成 3600 次/小时
+（1 个/秒），闸门判定与退出取值之间几毫秒就可能回填满桶，导致 `resumeAt` 偶发为 0。
+改成 60 次/小时后判定稳定——产品行为没问题（桶满了自然不需要等），是用例设计不当。
+
+[1.8.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.8.0
+
+---
+
 ## [1.7.0] - 2026-11-16
 
 额度机制改造第 2 步：**消除「打满额度后干等 60 分钟」的悬崖**。新能力，升 minor。

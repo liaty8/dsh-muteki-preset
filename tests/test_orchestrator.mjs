@@ -43,6 +43,7 @@ test("resolveLimits: attended / unattended 两套预设", { skip: SKIP_REASON },
       burstRuns: 60,
       onQuota: "wait",
       maxWaitMinutes: 10,
+      stagnationLimit: 5,
     });
     assert.deepEqual(resolveLimits({ mode: "unattended" }), {
       mode: "unattended",
@@ -53,6 +54,7 @@ test("resolveLimits: attended / unattended 两套预设", { skip: SKIP_REASON },
       burstRuns: 12,
       onQuota: "stop",
       maxWaitMinutes: 0,
+      stagnationLimit: 3,
     });
     assert.equal(PRESETS.attended.burstRuns > PRESETS.attended.runsPerHour, true);
     assert.equal(PRESETS.unattended.burstRuns, PRESETS.unattended.runsPerHour);
@@ -283,7 +285,7 @@ test("run: onQuota=wait 会等令牌回填并继续派下一轮", { skip: SKIP_R
 
 test("run: unattended 默认 stop，绝不自作主张等待", { skip: SKIP_REASON }, async () => {
   await withHarness(
-    { config: { mode: "unattended", burstRuns: 1, maxRunsPerHour: 3600, maxRunsPerChallenge: 100 } },
+    { config: { mode: "unattended", burstRuns: 1, maxRunsPerHour: 60, maxRunsPerChallenge: 100 } },
     async (h) => {
       h.board(["use", "t-nowait"]);
       h.seedTask("任务一");
@@ -419,6 +421,123 @@ test("run: override_quota 让本轮继续，并标记 overridden", { skip: SKIP_
       assert.equal(out.dispatched.length, 2);
       assert.equal(out.overridden, true);
       assert.equal(out.stoppedReason, "empty");
+    },
+  );
+});
+
+// ── 停滞熔断（v1.8.0）─────────────────────────────────────────────────────
+
+test("stagnation: 连续 N 轮无新增 fact/flag → 停并写 review gap", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    { config: { stagnationLimit: 2, burstRuns: 100, maxRunsPerHour: 100 } },
+    async (h) => {
+      h.board(["use", "t-stagnant"]);
+      h.seedTask("任务一");
+      h.seedTask("任务二");
+      h.seedTask("任务三");
+      const out = await h.call("muteki_run", { challenge: "t-stagnant", limit: 1, max_rounds: 6 });
+      assert.equal(out.stoppedReason, "stagnation");
+      assert.equal(out.stagnantRounds, 2);
+      assert.equal(out.dispatched.length, 2);
+      const reviews = JSON.parse(h.board(["review", "list", "--status", "open", "--json"]).stdout);
+      assert.equal(reviews.length, 1);
+      assert.equal(reviews[0].kind, "gap");
+      assert.match(reviews[0].note, /连续 2 轮/);
+    },
+  );
+});
+
+test("stagnation: 每轮都有新 fact 就不熔断，跑到队列空", { skip: SKIP_REASON }, async () => {
+  const aid = "atest0001-000000";
+  let n = 0;
+  await withHarness(
+    {
+      config: { stagnationLimit: 2, burstRuns: 100, maxRunsPerHour: 100 },
+      worker: async ({ board }) => {
+        n += 1;
+        board(["fact", `进展${n}`, `第 ${n} 步拿到可复用结论`, "--artifact", aid]);
+      },
+    },
+    async (h) => {
+      h.makeArtifact(aid, "worker output");
+      h.board(["use", "t-progress"]);
+      h.seedTask("任务一");
+      h.seedTask("任务二");
+      h.seedTask("任务三");
+      const out = await h.call("muteki_run", { challenge: "t-progress", limit: 1, max_rounds: 6 });
+      assert.equal(out.stoppedReason, "empty");
+      assert.equal(out.stagnantRounds, 0);
+      assert.equal(out.dispatched.length, 3);
+    },
+  );
+});
+
+test("stagnation: 只写 observation 不算进展", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { stagnationLimit: 2, burstRuns: 100, maxRunsPerHour: 100 },
+      worker: async ({ board }) => {
+        board(["fact", "推测", "还没证实，不能当结论"]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-obs"]);
+      h.seedTask("任务一");
+      h.seedTask("任务二");
+      const out = await h.call("muteki_run", { challenge: "t-obs", limit: 1, max_rounds: 6 });
+      assert.equal(out.stoppedReason, "stagnation");
+    },
+  );
+});
+
+test("stagnation: 只写 deadend 不算进展", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { stagnationLimit: 2, burstRuns: 100, maxRunsPerHour: 100 },
+      worker: async ({ board }) => {
+        board(["deadend", "又排除一个方向", "--tested", "范围", "--observed", "结果"]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-dead"]);
+      h.seedTask("任务一");
+      h.seedTask("任务二");
+      const out = await h.call("muteki_run", { challenge: "t-dead", limit: 1, max_rounds: 6 });
+      assert.equal(out.stoppedReason, "stagnation");
+    },
+  );
+});
+
+test("stagnation: limit=0 关闭熔断", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    { config: { stagnationLimit: 0, burstRuns: 100, maxRunsPerHour: 100 } },
+    async (h) => {
+      h.board(["use", "t-off"]);
+      h.seedTask("任务一");
+      h.seedTask("任务二");
+      h.seedTask("任务三");
+      const out = await h.call("muteki_run", { challenge: "t-off", limit: 1, max_rounds: 6 });
+      assert.equal(out.stoppedReason, "empty");
+      assert.equal(out.dispatched.length, 3);
+      assert.equal(out.stagnantRounds, 3);
+    },
+  );
+});
+
+test("stagnation: 出现 flag 时首解优先，不误判停滞", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { stagnationLimit: 1, burstRuns: 100, maxRunsPerHour: 100 },
+      worker: async ({ board }) => {
+        board(["flag", "flag{test}", "--source", "mock-worker"]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-flagwin"]);
+      h.seedTask("任务一");
+      const out = await h.call("muteki_run", { challenge: "t-flagwin", limit: 1, max_rounds: 6 });
+      assert.equal(out.stoppedReason, "flag");
+      assert.deepEqual(out.flags, ["flag{test}"]);
     },
   );
 });

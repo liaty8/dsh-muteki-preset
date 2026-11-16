@@ -33,11 +33,11 @@ export const PRESETS = {
   // unattended：无人值守 / 定时任务，额度收紧、不给突发、绝不自作主张等待。
   attended: {
     runsPerHour: 40, costPerHour: 15, runsPerChallenge: 300, costPerChallenge: 50,
-    burstRuns: 60, onQuota: "wait", maxWaitMinutes: 10,
+    burstRuns: 60, onQuota: "wait", maxWaitMinutes: 10, stagnationLimit: 5,
   },
   unattended: {
     runsPerHour: 12, costPerHour: 5, runsPerChallenge: 100, costPerChallenge: 15,
-    burstRuns: 12, onQuota: "stop", maxWaitMinutes: 0,
+    burstRuns: 12, onQuota: "stop", maxWaitMinutes: 0, stagnationLimit: 3,
   },
 };
 
@@ -59,6 +59,7 @@ export const resolveLimits = (config) => {
     burstRuns: pick(config?.burstRuns, preset.burstRuns),
     onQuota,
     maxWaitMinutes: pickNonNeg(config?.maxWaitMinutes, preset.maxWaitMinutes),
+    stagnationLimit: pickNonNeg(config?.stagnationLimit, preset.stagnationLimit),
   };
 };
 
@@ -87,6 +88,11 @@ export const Config = z.object({
     .number()
     .min(0)
     .comment("onQuota=wait 时单次最长等待分钟数；省略按 mode（attended 10 / unattended 0）"),
+  stagnationLimit: z
+    .number()
+    .step(1)
+    .min(0)
+    .comment("连续多少轮没有新增带证据 fact / flag 就停并写复核意见；0=关闭。省略按 mode（attended 5 / unattended 3）"),
   maxCostUsdPerHour: z
     .number()
     .comment("每题每小时成本上限（美元，估算口径）；省略则用 mode 预设（attended 15 / unattended 5）"),
@@ -499,6 +505,22 @@ export function apply(ctx, config) {
     return run.status === 0 ? run.out.trim() || "default" : "default";
   };
 
+  /**
+   * 进展快照：最新带证据 fact 的 id + flag 条数。
+   * observation / deadend **不算进展**——硬题真正的风险是同一条死路换个说法反复试，
+   * 只有「拿到了新的可复用结论」或「拿到 flag」才说明这一轮没白派。
+   * context --json 的 facts 按 id DESC 取前 N 条，所以 max(id) 就是全题最新 fact id。
+   */
+  const progressSnapshot = (cwd) => {
+    const data = boardJson(cwd);
+    const facts = Array.isArray(data?.facts) ? data.facts : [];
+    const flags = Array.isArray(data?.flags) ? data.flags : [];
+    return {
+      factId: facts.reduce((max, row) => Math.max(max, Number(row?.id) || 0), 0),
+      flagCount: flags.length,
+    };
+  };
+
   const flagValue = (flag) =>
     typeof flag === "string" ? flag : String(flag?.value ?? flag?.flag ?? flag);
 
@@ -786,7 +808,7 @@ ${contextText}
     name: "muteki_run",
     description:
       "自动循环驱动 Muteki 蜂群：反复从任务队列认领 open 任务并派子代理，等这一批完成后检查黑板，" +
-      "队列空、出现 flag、超时或额度用尽就停止，返回 stoppedReason、quota 明细与 resumeAt。" +
+      "队列空、出现 flag、超时、额度用尽或连续多轮无进展（stagnation）就停止，返回 stoppedReason、quota 明细与 resumeAt。" +
       "派单速率用令牌桶（开局可突发 burstRuns 个，之后按 maxRunsPerHour 回填）；" +
       "onQuota=wait 时令牌不足会等回填（最多 maxWaitMinutes），attended 下也可带 override_quota=true 显式越过速率限制（留痕，不越过成本/整题总闸）。" +
       "适合「给一批任务，自己跑到出结果」。",
@@ -860,6 +882,7 @@ ${contextText}
           waitedMs: { type: "number" },
           overridden: { type: "boolean" },
           overrideNote: { type: "string" },
+          stagnantRounds: { type: "number" },
         },
       },
       render: (_args, value) => [
@@ -871,6 +894,10 @@ ${contextText}
             (value.flags.length ? `，本轮新 flag：${value.flags.join(", ")}` : "") +
             (value.waitedMs ? `，等令牌 ${Math.round(value.waitedMs / 1000)}s` : "") +
             (value.overridden ? "，本轮显式越过速率限制（已留痕）" : "") +
+            (value.stagnantRounds ? `，连续 ${value.stagnantRounds} 轮无新增 fact/flag` : "") +
+            (value.stoppedReason === "stagnation"
+              ? "\n已写一条 review（kind=gap）：先 board.py review list --status open 看意见，再决定换方向还是换引擎，不要原样重跑。"
+              : "") +
             (value.quota
               ? `\n额度（${value.quota.mode}）：令牌 ${value.quota.tokens}/${value.quota.burstRuns}` +
                 `（回填 ${value.quota.runsPerHour} 次/h，${value.quota.onQuota}）；` +
@@ -917,6 +944,9 @@ ${contextText}
       let waitedMs = 0;
       let overridden = false;
       let overrideNote = "";
+      const limits = resolveLimits(config);
+      let progress = progressSnapshot(cwd);
+      let stagnantRounds = 0;
 
       // 开工前回收「上一个会话中断后卡在 claimed」的任务，否则队列会一直是空的。
       try {
@@ -1018,6 +1048,33 @@ ${contextText}
           stoppedReason = "timeout";
           break;
         }
+        // 停滞熔断：连续 N 轮没有新增带证据 fact / flag 就停下来找人，
+        // 而不是继续烧派单额度去重试同一条死路。硬题该被「没进展」拦，不该被「次数」拦。
+        const nowProgress = progressSnapshot(cwd);
+        if (nowProgress.factId > progress.factId || nowProgress.flagCount > progress.flagCount) {
+          progress = nowProgress;
+          stagnantRounds = 0;
+        } else {
+          stagnantRounds += 1;
+          if (limits.stagnationLimit > 0 && stagnantRounds >= limits.stagnationLimit) {
+            stoppedReason = "stagnation";
+            try {
+              runBoard(
+                [
+                  "review", "add", "--kind", "gap",
+                  "--note",
+                  `连续 ${stagnantRounds} 轮派单没有新增带证据的 fact 或 flag（只产出 observation / deadend，或什么都没写）。` +
+                    "建议人工换思路：核对 deadend 是否已覆盖当前方向、是否缺入口/凭据/原语，或换异构引擎（muteki_cli）打一遍。",
+                ],
+                cwd,
+              );
+            } catch {
+              /* 写复核意见失败不影响收束 */
+            }
+            break;
+          }
+        }
+
         // 额度不在这里判：回到循环顶部由 ensureQuota 统一处理（onQuota=wait 时会等令牌回填）。
         // 若在这里直接 budget 停掉，刚派完一批就退出，等待机制永远没机会生效。
         await sleep(500);
@@ -1042,6 +1099,7 @@ ${contextText}
         waitedMs,
         overridden,
         overrideNote,
+        stagnantRounds,
       };
       } finally {
         // 无论正常结束、超时还是被用户中断，都把本轮「派出但没做完」的任务
