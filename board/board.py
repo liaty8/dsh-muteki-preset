@@ -56,6 +56,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+__version__ = "1.0.13"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -293,6 +295,17 @@ def record(conn: sqlite3.Connection, kind: str, payload: dict) -> None:
         "INSERT INTO events (ts, kind, payload) VALUES (?, ?, ?)",
         (now(), kind, json.dumps(payload, ensure_ascii=False)),
     )
+
+
+def commit_with_event(conn: sqlite3.Connection, kind: str, payload: dict) -> None:
+    """把「写事件」与「提交」绑在一起。
+
+    历史缺陷（v1.0.13 之前）：task / review 的各动作先 conn.commit() 再 record()，
+    事件 INSERT 落在一个从未提交的事务里，进程退出即回滚，导致 events 表缺失
+    全部 task_* / review_* 事件。所有写操作统一走本函数，杜绝再次写反。
+    """
+    record(conn, kind, payload)
+    conn.commit()
 
 
 def short(text: str, limit: int = 400) -> str:
@@ -795,9 +808,12 @@ def cmd_task(args: argparse.Namespace) -> int:
             "VALUES (?, ?, ?, 'open', ?, ?, ?, ?)",
             (ch, args.title, args.detail, owner, priority, now(), now()),
         )
-        conn.commit()
         tid = cur.lastrowid
-        record(conn, "task_added", {"challenge": ch, "id": tid, "title": args.title, "priority": priority})
+        commit_with_event(
+            conn,
+            "task_added",
+            {"challenge": ch, "id": tid, "title": args.title, "priority": priority},
+        )
         print(f"已加入任务队列（{ch}）：t{tid} {args.title}")
         return 0
     if action == "list":
@@ -830,7 +846,6 @@ def cmd_task(args: argparse.Namespace) -> int:
             "WHERE id=? AND status='open' AND challenge=?",
             (owner, now(), args.id, ch),
         )
-        conn.commit()
         if cur.rowcount == 0:
             row = conn.execute(
                 "SELECT status, owner, challenge FROM tasks WHERE id=?", (args.id,)
@@ -848,7 +863,7 @@ def cmd_task(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
             return 1
-        record(conn, "task_claimed", {"challenge": ch, "id": args.id, "owner": owner})
+        commit_with_event(conn, "task_claimed", {"challenge": ch, "id": args.id, "owner": owner})
         print(f"已认领 t{args.id}（{ch}，{owner}）")
         return 0
     if action == "reopen":
@@ -857,11 +872,10 @@ def cmd_task(args: argparse.Namespace) -> int:
             "WHERE id=? AND status='claimed' AND challenge=?",
             (now(), args.id, ch),
         )
-        conn.commit()
         if cur.rowcount == 0:
             print(f"t{args.id} 不存在、不属于当前题或不是 claimed", file=sys.stderr)
             return 1
-        record(conn, "task_reopened", {"challenge": ch, "id": args.id})
+        commit_with_event(conn, "task_reopened", {"challenge": ch, "id": args.id})
         print(f"t{args.id} → open（{ch}，已释放认领）")
         return 0
     if action == "reclaim":
@@ -880,11 +894,10 @@ def cmd_task(args: argparse.Namespace) -> int:
                 (now(), row["id"]),
             )
             released.append(f"t{row['id']}（原 owner={row['owner'] or '?'}）")
-        conn.commit()
         if not released:
             print(f"（没有超过 {minutes} 分钟仍未完成的 claimed 任务，题 {ch}）")
             return 0
-        record(conn, "task_reclaimed", {"challenge": ch, "ids": [r["id"] for r in rows]})
+        commit_with_event(conn, "task_reclaimed", {"challenge": ch, "ids": [r["id"] for r in rows]})
         print(f"已释放回 open（题 {ch}，{len(released)} 条）：" + "、".join(released))
         return 0
     if action in ("done", "drop"):
@@ -894,11 +907,10 @@ def cmd_task(args: argparse.Namespace) -> int:
             "WHERE id=? AND challenge=? AND status IN ('open','claimed')",
             (status, now(), args.id, ch),
         )
-        conn.commit()
         if cur.rowcount == 0:
             print(f"t{args.id} 不存在、不属于当前题或已收尾", file=sys.stderr)
             return 1
-        record(conn, f"task_{status}", {"challenge": ch, "id": args.id})
+        commit_with_event(conn, f"task_{status}", {"challenge": ch, "id": args.id})
         print(f"t{args.id} → {status}（{ch}）")
         return 0
     print(f"未知 task 操作：{action}", file=sys.stderr)
@@ -918,9 +930,12 @@ def cmd_review(args: argparse.Namespace) -> int:
             "VALUES (?, ?, ?, ?, 'open', ?)",
             (ch, args.kind, args.target, args.note, now()),
         )
-        conn.commit()
         rid = cur.lastrowid
-        record(conn, "review_added", {"challenge": ch, "id": rid, "kind": args.kind, "target": args.target})
+        commit_with_event(
+            conn,
+            "review_added",
+            {"challenge": ch, "id": rid, "kind": args.kind, "target": args.target},
+        )
         target = f" → {args.target}" if args.target else ""
         print(f"r{rid} 已记录复核意见（{ch}，{args.kind}{target}）")
         return 0
@@ -952,11 +967,10 @@ def cmd_review(args: argparse.Namespace) -> int:
             "UPDATE reviews SET status='resolved' WHERE id=? AND status='open' AND challenge=?",
             (args.id, ch),
         )
-        conn.commit()
         if cur.rowcount == 0:
             print(f"r{args.id} 不存在、不属于当前题或已关闭", file=sys.stderr)
             return 1
-        record(conn, "review_resolved", {"challenge": ch, "id": args.id})
+        commit_with_event(conn, "review_resolved", {"challenge": ch, "id": args.id})
         print(f"r{args.id} 已关闭")
         return 0
     print(f"未知 review 操作：{action}", file=sys.stderr)
@@ -996,6 +1010,12 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="board.py", description="Muteki 作战黑板（按题隔离）")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"muteki-board {__version__}",
+        help="打印黑板脚本版本（用于核对本机装的是哪个 release）",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("use", help="切换当前题（旧题数据保留但默认不可见）")
