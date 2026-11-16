@@ -8,6 +8,69 @@
 
 ---
 
+## [1.7.0] - 2026-11-16
+
+额度机制改造第 2 步：**消除「打满额度后干等 60 分钟」的悬崖**。新能力，升 minor。
+
+### 问题
+
+`recentRuns` 是滚动小时窗口：打满上限后，最坏要等 **60 分钟**才腾出 1 个额度，
+而 `muteki_run` 直接返回 `budget`，人不在就干等。硬题的派单本来是「前密后疏」
+（开局 recon + 第一轮 exp 要一口气铺出去），滚动窗口恰好在最需要突发的时候卡死。
+
+### Added
+
+- **派单令牌桶**（新账本 `buckets.json`，按题独立）：
+  - 容量 `burstRuns`：attended **60** / unattended **12**（开局可一次性派这么多）；
+  - 回填速率 `maxRunsPerHour`：attended 40 / unattended 12（次/小时，连续回填，不是整点重置）；
+  - 每次派单消耗 1 个令牌；`runs.json` 保留为流水（供复盘），不再当硬闸。
+- **`onQuota` / `maxWaitMinutes`**：`muteki_run` 令牌不足时 `wait`（等回填，attended 默认最多 10 分钟）
+  或 `stop`（unattended 默认，绝不自作主张等待）。等待可被 `exec.signal` 中断。
+  **只作用于 run 的循环**；`dispatch` / `tick` / `cli` 立即返回，不阻塞界面。
+- **`override_quota` / `override_reason` 参数**（dispatch / tick / run / cli 四个工具都有）：
+  仅 `mode: attended` 有效，人显式越过本轮**速率**限制；往黑板写一条 observation（无证据、不算事实）
+  并记 `overrides.jsonl` 留痕。**成本上限与整题总闸越不过去**，批次内也照常判定。
+- **`muteki_run` 新返回字段**：`resumeAt`（下一个令牌回填时刻，epoch ms）、`waitedMs`（本轮累计等待）、
+  `overridden`、`overrideNote`（override 为什么没生效）；`quota` 明细补 `tokens` / `burstRuns` / `onQuota` / `maxWaitMinutes`。
+  render 文本同步显示等待秒数、越过留痕与「约几点几分回填出下一个令牌」。
+
+### Changed
+
+- `maxRunsPerHour` 语义从「每小时硬上限」变为「**令牌回填速率**」；硬闸由桶容量承担。
+  显式配置仍然优先，老配置写死的数值不会被预设改掉。
+- 额度判定不再抛异常式处理 override 误用：撞上钱的闸时 run **优雅收束**
+  （`stoppedReason: "budget"` + `overrideNote`），而不是整个工具报错。
+- 移除 run 批次结束后的那一次额度判定——否则刚派完一批就 `budget` 退出，等待机制永远没机会生效；
+  统一回到循环顶部由 `ensureQuota` 处理。
+- `preset-muteki.patch.yml` 的 config 注释与 **persona 额度描述**同步为令牌桶语义。
+- `README.md`、`board/SKILL.md`、插件 README：额度表格、等待/越过规则、工具参数表。
+
+### Migration
+
+- 无黑板 schema 变更。`buckets.json` 首次判定时自动创建，**新题从满桶开始**。
+- 行为变化：同样配置下开局能派更多（突发），随后按速率持续供给；
+  `attended` 的 run 在令牌不足时会**等一会儿**而不是立刻停（不想等就设 `onQuota: stop`）。
+- 插件覆盖后需重启 DSH。
+
+### 验证
+
+```bash
+DSH_NODE_MODULES=<profile>/node_modules node --test tests/test_orchestrator.mjs   # 26 pass
+python -m unittest discover -s tests                                             # Ran 125 tests ... OK
+```
+
+新增 12 个用例（14 → **26**）：突发额度可超过每小时速率、时间过去按速率回填（不用等满一小时）、
+`onQuota=wait` 真的等并继续派下一轮、unattended 默认 stop 且给 `resumeAt`、等待被 `maxWaitMinutes` 封顶、
+override 在 attended 生效并留痕（黑板 observation + `overrides.jsonl`）、unattended 下拒绝、
+**override 不能越过整题派单总闸 / 成本总闸**、批次内总闸照常拦、unattended 带 override 时 run 优雅停并说明原因。
+
+过程中抓到一个自己引入的缺陷：override 在循环顶部生效后，**批次内仍用未放宽的 `quotaState` 判定**，
+导致第二轮一个都派不出去（`dispatched=1`）。改为 `roundQuotaOk()`：override 只放宽令牌，钱的闸照常拦。
+
+[1.7.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.7.0
+
+---
+
 ## [1.6.0] - 2026-11-16
 
 对应额度机制改造第 1 步：**硬题很容易打满每小时上限，然后干等**。新能力，升 minor。

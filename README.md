@@ -229,20 +229,25 @@ board.py context --all     # 跨题审计
 
 ### 6. 额度按题独立，且分「人主导 / 无人值守」两套
 
-额度由 `mode` 决定预设，四个字段都可以显式覆盖（显式值优先）：
+额度由 `mode` 决定预设，每个字段都可以显式覆盖（显式值优先）：
 
 | 上限 | attended（人主导，默认） | unattended（无人值守/定时） | 账本 | 恢复方式 |
 |---|---|---|---|---|
-| 每题每小时派单 `maxRunsPerHour` | 40 | 12 | `runs.json`（滚动 1h） | 等窗口滚动 |
+| 令牌桶容量 `burstRuns`（开局可一次性派多少） | 60 | 12 | `buckets.json` | 按速率持续回填 |
+| 令牌回填速率 `maxRunsPerHour`（次/小时） | 40 | 12 | `buckets.json` | 时间过去就回填 |
 | 每题每小时成本 `maxCostUsdPerHour` | $15 | $5 | `costs.json`（滚动 1h） | 等窗口滚动 |
 | **整题累计派单** `maxRunsPerChallenge` | 300 | 100 | `totals.json`（不清理） | 换题或调高配置 |
 | **整题累计成本** `maxCostUsdPerChallenge` | $50 | $15 | `totals.json`（不清理） | 换题或调高配置 |
+| 令牌不足时 `onQuota` / `maxWaitMinutes` | `wait` / 10 分钟 | `stop` / 0 | — | — |
 
-- 为什么要整题总闸：每小时上限只防「短时间失控」，一道硬题连打八小时照样能烧穿预算；`totals.json` 按题累计、跨小时不清零。
+- **为什么用令牌桶而不是滚动小时窗口**：滚动窗口是悬崖——打满上限后最坏要干等 60 分钟才腾出 1 个额度。令牌桶把速率限制变成「容量 + 回填」：开局能一口气派 60 个把 recon 与第一轮 exp 全铺出去，之后按 40 次/小时持续供给。硬题的派单本来就是前密后疏。
+- **为什么要整题总闸**：每小时上限只防「短时间失控」，一道硬题连打八小时照样能烧穿预算；`totals.json` 按题累计、跨小时不清零。
+- **`onQuota: wait` 只作用于 `muteki_run` 的循环**：令牌不足时等回填（最多 `maxWaitMinutes`），等不到就停并给 `resumeAt`（下一个令牌的时刻）。`dispatch` / `tick` / `cli` 立即返回，不阻塞界面。无人值守默认 `stop`，绝不自作主张等待。
+- **`override_quota=true`（仅 attended）**：人显式越过本轮**速率**限制，往黑板写一条 observation + `overrides.jsonl` 留痕。**成本上限与整题总闸越不过去**——那是钱的闸。
 - 切到新题不继承旧题额度；切回旧题时额度继续累计。
-- `muteki_dispatch` / `tick` / `run` / `cli` 四个入口共用同一套判定，不会口径分叉；`muteki_run` 返回 `quota` 明细与 `limitHit`，`stoppedReason: "budget"` 时能直接看出命中哪一条。
+- 四个入口共用同一套判定（`quotaState`），不会口径分叉；`muteki_run` 返回 `quota` 明细、`limitHit`、`resumeAt`、`waitedMs`、`overridden`、`overrideNote`。
 - 美元是 **Claude Code 按 Anthropic 标价的估算**，接 DeepSeek 后端时实际账单低一个数量级（$15/h 估算 ≈ 实际 $1.5/h）。
-- 超限就用 `board.py task drop <id>` 放弃该题，或换题。
+- 整题总闸打满就用 `board.py task drop <id>` 放弃该题，或换题。
 
 ---
 
@@ -434,7 +439,10 @@ dsh-muteki-preset/
 | `boardPy` | `~/.dsh-muteki/board.py` | `board.py` 路径 |
 | `storageDir` | `~/.dsh-muteki/artifacts` | 证据与 `runs/costs/totals/subagents/cli` 账本存放 |
 | `mode` | `attended` | `attended`=人主导（额度宽）；`unattended`=无人值守/定时任务（额度紧） |
-| `maxRunsPerHour` | 按 mode（40 / 12） | 每题每小时派单上限 |
+| `maxRunsPerHour` | 按 mode（40 / 12） | 派单令牌的每小时回填速率 |
+| `burstRuns` | 按 mode（60 / 12） | 令牌桶容量=开局可一次性派多少单 |
+| `onQuota` | 按 mode（wait / stop） | `muteki_run` 令牌不足时等回填还是立即停 |
+| `maxWaitMinutes` | 按 mode（10 / 0） | `onQuota=wait` 时单次最长等待分钟数 |
 | `maxCostUsdPerHour` | 按 mode（$15 / $5） | 每题每小时成本上限（估算口径） |
 | `maxRunsPerChallenge` | 按 mode（300 / 100） | 整题累计派单总闸，不随小时重置 |
 | `maxCostUsdPerChallenge` | 按 mode（$50 / $15） | 整题累计成本总闸 |
@@ -443,7 +451,7 @@ dsh-muteki-preset/
 | `claudeConfigDir` | 空 | 独立配置目录（建议指向一个干净、无插件的 config） |
 | `enabled` | `true` | 总开关 |
 
-四个额度字段省略即用 `mode` 预设；**显式写出的值优先**，所以老配置里写死的 `12` / `3` 不会被预设悄悄改掉。
+这些额度字段省略即用 `mode` 预设；**显式写出的值优先**，所以老配置里写死的 `12` / `3` 不会被预设悄悄改掉。
 
 ---
 

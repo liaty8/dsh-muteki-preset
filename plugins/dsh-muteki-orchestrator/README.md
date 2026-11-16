@@ -6,11 +6,11 @@
 
 | 工具 | 作用 | 主要参数 |
 |---|---|---|
-| `muteki_dispatch` | 手动派一个 Step | `prompt`（必填）、`name`、`lane`、`lane_ttl`、`provider`、`model`、`reasoning_effort`、`cwd` |
-| `muteki_tick` | 从黑板任务队列取 1–3 条，批量派一轮 | `limit`（1–3）、`cwd`、`provider`、`model` |
-| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag → 直到空/flag/超时/额度 | `limit`、`max_rounds`、`max_minutes`、`challenge`、`cwd`、`provider`、`model` |
+| `muteki_dispatch` | 手动派一个 Step | `prompt`（必填）、`name`、`lane`、`lane_ttl`、`provider`、`model`、`reasoning_effort`、`cwd`、`override_quota`、`override_reason` |
+| `muteki_tick` | 从黑板任务队列取 1–3 条，批量派一轮 | `limit`（1–3）、`cwd`、`provider`、`model`、`override_quota` |
+| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag → 直到空/flag/超时/额度 | `limit`、`max_rounds`、`max_minutes`、`challenge`、`cwd`、`provider`、`model`、`override_quota`、`override_reason` |
 | `muteki_review` | 起一个只读 Reviewer 审黑板，意见写回 review 表 | `cwd`、`focus` |
-| `muteki_cli` | 把 Step 交给本地 Claude Code CLI（独立进程、异步、不占子代理席位） | `prompt`、`cwd`、`timeout_minutes`（1–30）、`model` |
+| `muteki_cli` | 把 Step 交给本地 Claude Code CLI（独立进程、异步、不占子代理席位） | `prompt`、`cwd`、`timeout_minutes`（1–30）、`model`、`override_quota` |
 
 ## 安装
 
@@ -41,9 +41,12 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 |---|---|---|
 | `python` | `python` | 调 board.py 的解释器 |
 | `boardPy` | `~/.dsh-muteki/board.py` | 黑板脚本路径 |
-| `storageDir` | `~/.dsh-muteki/artifacts` | 证据与 `runs.json` / `costs.json` / `totals.json` / `subagents.jsonl` / `cli.jsonl` |
-| `mode` | `attended` | `attended`=人主导（额度宽）；`unattended`=无人值守/定时任务（额度紧） |
-| `maxRunsPerHour` | 按 mode | **每题**每小时派单上限；attended 40 / unattended 12 |
+| `storageDir` | `~/.dsh-muteki/artifacts` | 证据与账本：`runs.json`、`costs.json`、`totals.json`、`buckets.json`、`overrides.jsonl`、`subagents.jsonl`、`cli.jsonl` |
+| `mode` | `attended` | `attended`=人主导（额度宽、给突发、可等待）；`unattended`=无人值守/定时任务（额度紧、不等待） |
+| `maxRunsPerHour` | 按 mode | 派单令牌的**每小时回填速率**；attended 40 / unattended 12 |
+| `burstRuns` | 按 mode | **令牌桶容量**=开局可一次性派多少单；attended 60 / unattended 12 |
+| `onQuota` | 按 mode | `muteki_run` 令牌不足时 `wait`（等回填）/ `stop`（立即停）；attended wait / unattended stop |
+| `maxWaitMinutes` | 按 mode | `onQuota=wait` 时单次最长等待分钟数；attended 10 / unattended 0 |
 | `maxCostUsdPerHour` | 按 mode | **每题**每小时成本上限（美元，估算口径）；attended 15 / unattended 5 |
 | `maxRunsPerChallenge` | 按 mode | **整题累计**派单总闸，不随小时重置；attended 300 / unattended 100 |
 | `maxCostUsdPerChallenge` | 按 mode | **整题累计**成本总闸（美元）；attended 50 / unattended 15 |
@@ -60,10 +63,19 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 
 | 上限 | 账本 | 恢复方式 |
 |---|---|---|
-| 每小时派单 | `runs.json`（滚动 1h，保留 24h） | 等窗口滚动 |
+| 派单令牌（桶容量 `burstRuns`，回填 `maxRunsPerHour`/h） | `buckets.json` | 时间过去就持续回填；`onQuota=wait` 时 run 会自动等 |
 | 每小时成本 | `costs.json`（滚动 1h，保留 24h） | 等窗口滚动 |
 | 整题累计派单 | `totals.json`（**不清理**） | 换一道新题，或调高配置 |
 | 整题累计成本 | `totals.json`（**不清理**） | 换一道新题，或调高配置 |
+
+**为什么是令牌桶而不是滚动小时窗口**：滚动窗口是悬崖——打满 12 次后最坏要干等 60 分钟才腾出 1 个额度，而 `muteki_run` 直接返回，人不在就干等。令牌桶把速率限制变成「容量 + 回填」：开局能一口气派 `burstRuns` 个把 recon 与第一轮 exp 全铺出去，之后按 `maxRunsPerHour` 持续供给。硬题的派单本来就是前密后疏。
+
+**等待与越过**：
+
+- `onQuota: wait` **只作用于 `muteki_run` 的循环**（最多 `maxWaitMinutes`，等不到就停并给 `resumeAt`）。`dispatch` / `tick` / `cli` 立即返回错误，不阻塞界面。
+- `override_quota=true` + `override_reason="..."`：**仅 `mode: attended`**，显式越过本轮**速率**限制，往黑板写一条 observation（无证据，不算事实）并记 `overrides.jsonl`。
+- **成本上限与整题总闸越不过去**，`override_quota` 对它们无效；撞上时 run 会优雅收束（`stoppedReason: "budget"` + `overrideNote` 说明原因），而不是整个工具报错。
+- 批次内也照常判定：override 只放宽令牌，一轮里派到整题总闸就停。
 
 为什么要有整题总闸：每小时上限防的是「短时间失控」，但一道硬题连打八小时照样能烧穿预算——以前没有任何东西拦得住。`totals.json` 按题累计、跨小时不清零，切回旧题继续累计，换新题从 0 开始。
 
