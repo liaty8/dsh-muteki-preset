@@ -17,6 +17,7 @@ param(
   [string]$ClaudeBin = "claude",
   [string]$ClaudeConfigDir = "",
   [string]$StorageDir = "",
+  [string]$ConfigDir = "",
   [switch]$Apply,
   [switch]$Force
 )
@@ -32,15 +33,18 @@ $profileDir = Join-Path $DshHome "profiles\$Profile"
 if (-not (Test-Path $profileDir)) { throw "找不到 profile 目录：$profileDir（用 -Profile 指定，如 desktop / web）" }
 
 if (-not $StorageDir) { $StorageDir = Join-Path $HOME ".dsh-muteki\artifacts" }
+if (-not $ConfigDir) { $ConfigDir = Join-Path $HOME ".dsh-muteki" }
 $boardDir = Join-Path $DshHome "skills\muteki-board"
 $boardPy = Join-Path $boardDir "board.py"
 $patchPath = Join-Path $profileDir "cordis.patch.yml"
+$configPath = Join-Path $ConfigDir "config.json"
 
 Write-Host "DSH_HOME : $DshHome"
 Write-Host "Profile  : $profileDir"
 Write-Host "Python   : $Python"
 Write-Host "Board    : $boardPy"
 Write-Host "Storage  : $StorageDir"
+Write-Host "Config   : $configPath"
 Write-Host ""
 
 # 0) 已安装检测
@@ -54,7 +58,23 @@ Copy-Item (Join-Path $root "board\board.py") $boardPy -Force
 $skill = Get-Content (Join-Path $root "board\SKILL.md") -Raw
 $skill = $skill.Replace("{{PYTHON}}", $Python).Replace("{{BOARD_PY}}", $boardPy).Replace("{{STORAGE_DIR}}", $StorageDir)
 Set-Content -Path (Join-Path $boardDir "SKILL.md") -Value $skill -Encoding UTF8
+
+# 1b) 安装配置：board.py 靠它定位证据目录（A3）。
+#     优先级：MUTEKI_ARTIFACT_DIR 环境变量 > 本文件的 storage_dir > 内置默认。
+#     用 .NET 写 UTF8 无 BOM，兼容 PowerShell 5.1 与 7（BOM 会让 json 解析失败）。
+New-Item -ItemType Directory -Force $ConfigDir | Out-Null
+$version = (Get-Content (Join-Path $root "plugins\dsh-muteki-orchestrator\package.json") -Raw | ConvertFrom-Json).version
+$cfg = [ordered]@{
+  python      = $Python
+  board_py    = $boardPy
+  storage_dir = $StorageDir
+  config_dir  = $ConfigDir
+  version     = $version
+}
+$json = $cfg | ConvertTo-Json
+[System.IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "[1/4] 黑板已安装：$boardDir"
+Write-Host "      配置已写入：$configPath（storage_dir=$StorageDir，version=$version）"
 
 # 2) 插件：直接放 profile 根目录，用相对路径挂载（不进 node_modules，pnpm install 不会移走）
 Copy-Item (Join-Path $root "plugins\dsh-muteki-orchestrator\plugin-v13.mjs") (Join-Path $profileDir "muteki-orchestrator.mjs") -Force

@@ -8,6 +8,63 @@
 
 ---
 
+## [1.1.2] - 2026-11-16
+
+对应路线图条目 **A3：安装时自定义证据目录会与 `board.py` 默认值分叉（release 阻塞级）**。
+
+### 问题
+
+`install.ps1` 原样复制 `board.py`，而 `board.py` 的默认证据目录是 `~/.dsh-muteki/artifacts`。
+用户一旦传 `-StorageDir` 指到别处，插件把证据写到自定义目录，`board.py` 却仍去内置默认找索引：
+
+- `fact --artifact <id>` → 证据校验失败，exit 2；
+- 不带 `--artifact` → 全部退化成 observation。
+
+证据门是这套预设的核心纪律，新装用户第一步就会踩坑，且现象隐蔽、难以自查。
+
+### Added
+
+- **安装配置 `config.json`**：`install.ps1` 新增 `-ConfigDir` 参数（默认 `%USERPROFILE%\.dsh-muteki`），
+  安装时写入 `python` / `board_py` / `storage_dir` / `config_dir` / `version` 五个字段。
+  用 .NET `UTF8Encoding($false)` 写入，**无 BOM**，兼容 PowerShell 5.1 与 7。
+- **`board.py` 配置读取**：新增 `config_file()` 与 `load_config()`；
+  证据目录优先级改为 **`MUTEKI_ARTIFACT_DIR` > `config.json` 的 `storage_dir`（兼容 `artifact_dir` 别名）> 内置默认**。
+  配置文件位置可用 `MUTEKI_CONFIG` 覆盖；读取用 `utf-8-sig` 容忍 BOM；
+  配置缺失/损坏静默回退，绝不让黑板命令崩掉。
+- `tests/test_board.py` 新增 `TestArtifactDirConfig`（6 个用例）：配置目录生效、环境变量优先于配置、
+  BOM 容忍、配置缺失回退、配置损坏回退、`artifact_dir` 别名。
+- `tests/test_install.py` 新增**端到端用例**：自定义 `-StorageDir` + `-ConfigDir` 安装后，
+  断言 config.json 无 BOM、`storage_dir` 与传入一致、`version` 与 package.json 一致；
+  随后在自定义证据目录放一条合成证据，**不设 `MUTEKI_ARTIFACT_DIR`**，
+  直接跑装好的 `board.py fact --artifact` → 必须成功且落为 fact（不是 observation）。
+- 安装冒烟测试统一传 `-ConfigDir` 到临时目录，**不再写真实用户目录**。
+
+### Changed
+
+- `board/SKILL.md` 证据库说明改为完整优先级链，并指出必须与插件 `artifactDir` 一致。
+- `board.py` 文档字符串同步。
+- `README.md` 新增「安装配置（`config.json`）」小节：字段示例、优先级、BOM 处理、`MUTEKI_CONFIG` 用法。
+- 版本号同步到 `1.1.2`。
+
+### Migration
+
+- **旧安装需要重跑一次 `install.ps1`** 才会生成 `config.json`；
+  在此之前行为与旧版一致（仍可用 `MUTEKI_ARTIFACT_DIR` 环境变量临时指定）。
+- 不涉及 schema 变更，黑板库无需迁移。
+- 已经手工把 `board.py` 默认路径改成硬编码绝对路径的用户：重跑安装会覆盖该文件，
+  之后请改用 `-StorageDir` / `config.json`，不要再手改脚本（避免仓库与运行副本分叉）。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 75 tests ... OK
+python scripts/check_sensitive.py         # rc=0
+```
+
+[1.1.2]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.1.2
+
+---
+
 ## [1.1.1] - 2026-11-16
 
 对应路线图条目 **A5：文档与配置默认值不一致 + 安装占位符两套命名**。

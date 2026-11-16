@@ -43,8 +43,9 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
 
 数据库默认在工作目录的 .muteki-board/board.db，可用 MUTEKI_BOARD_DB 覆盖；
 当前题可用 MUTEKI_CHALLENGE 覆盖（优先于 meta 里的值）。
-证据索引默认在 ~/.dsh-muteki/artifacts（与 muteki-core 插件的默认 artifactDir 一致），可用
-MUTEKI_ARTIFACT_DIR 覆盖（需与 muteki-core 插件配置的一致）。
+证据目录优先级：MUTEKI_ARTIFACT_DIR > 安装配置 ~/.dsh-muteki/config.json 的 storage_dir
+> 内置默认 ~/.dsh-muteki/artifacts。配置文件由 install.ps1 生成（可用 MUTEKI_CONFIG 指向别处），
+必须与 muteki-core 插件的 artifactDir 一致，否则证据门找不到索引。
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -146,10 +147,36 @@ def db_path() -> Path:
     return (Path.cwd() / ".muteki-board" / "board.db").resolve()
 
 
+def config_file() -> Path:
+    """安装时生成的配置文件（install.ps1 写入）。可用 MUTEKI_CONFIG 覆盖。"""
+    override = os.environ.get("MUTEKI_CONFIG")
+    if override:
+        return Path(override).expanduser().resolve()
+    return (Path.home() / ".dsh-muteki" / "config.json").resolve()
+
+
+def load_config() -> dict:
+    """读配置；缺失/损坏都静默回退到内置默认（utf-8-sig 容忍 BOM）。"""
+    try:
+        data = json.loads(config_file().read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def artifact_dir() -> Path:
+    """证据目录优先级：MUTEKI_ARTIFACT_DIR > config.json 的 storage_dir > 内置默认。
+
+    A3：此前只有「环境变量 > 内置默认」，install.ps1 自定义 -StorageDir 时
+    插件写到自定义目录、board.py 却去内置默认找索引，证据门必然失败。
+    """
     override = os.environ.get("MUTEKI_ARTIFACT_DIR")
     if override:
         return Path(override).expanduser().resolve()
+    cfg = load_config()
+    value = cfg.get("storage_dir") or cfg.get("artifact_dir")
+    if value:
+        return Path(str(value)).expanduser().resolve()
     return (Path.home() / ".dsh-muteki" / "artifacts").resolve()
 
 

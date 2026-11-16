@@ -25,7 +25,7 @@ DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工�
 - 不带 `--artifact` → 记为 observation，`context` 会把它单独列在「未证实观察」，提醒不要当结论；
 - 一个结论可以挂多个 `--artifact`（重复传参或空格/逗号分隔）。
 
-证据库默认在 `{{STORAGE_DIR}}\index.jsonl`（可用 `MUTEKI_ARTIFACT_DIR` 覆盖，必须与插件配置一致）。
+证据库目录优先级：`MUTEKI_ARTIFACT_DIR` 环境变量 > 安装配置 `~/.dsh-muteki/config.json` 的 `storage_dir` > 内置默认 `~/.dsh-muteki/artifacts`。索引文件为该目录下的 `index.jsonl`，**必须与 muteki-core 插件的 `artifactDir` 一致**，否则证据门找不到 id。配置文件由 `install.ps1` 生成，可用 `MUTEKI_CONFIG` 指向别处。
 
 ## 资源认领
 

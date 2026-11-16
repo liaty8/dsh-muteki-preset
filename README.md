@@ -310,6 +310,28 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 > 那是**运行时**由插件的 `fillCmd()` 从配置（`python` / `boardPy` / `storageDir`）填充的，
 > 与安装占位符是两套独立机制，**不需要手工替换**，也不会被 `install.ps1` 处理。
 
+### 安装配置（`config.json`）
+
+`install.ps1` 会在 `-ConfigDir`（默认 `%USERPROFILE%\.dsh-muteki`）下生成 `config.json`：
+
+```json
+{
+  "python": "python",
+  "board_py": "<你的 DSH home>\\skills\\muteki-board\\board.py",
+  "storage_dir": "<你的证据目录>",
+  "config_dir": "<配置目录>",
+  "version": "1.1.2"
+}
+```
+
+`board.py` 按 **`MUTEKI_ARTIFACT_DIR` 环境变量 > `config.json` 的 `storage_dir` > 内置默认** 的顺序定位证据目录。
+这解决了「安装时自定义 `-StorageDir`，插件写到自定义目录、`board.py` 却去内置默认找索引」的分叉问题
+（此前表现为：所有 fact 退化成 observation，或带 `--artifact` 时 exit 2）。
+
+- 配置文件用 UTF-8 **无 BOM** 写入（BOM 会让 JSON 解析失败）；`board.py` 读取时用 `utf-8-sig`，即使有 BOM 也容忍。
+- 配置缺失或损坏时静默回退到内置默认，不会让黑板命令崩掉。
+- 可用 `MUTEKI_CONFIG` 指向别的配置文件（多套安装 / 测试隔离时有用）。
+
 ---
 
 ## 使用

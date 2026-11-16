@@ -375,5 +375,73 @@ class TestFlagEvidenceAndStatus(BoardCase):
         self.assertEqual(row[2], "candidate")
 
 
+class TestArtifactDirConfig(BoardCase):
+    """A3：证据目录优先级 环境变量 > config.json > 内置默认。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.env.pop("MUTEKI_ARTIFACT_DIR", None)
+        self.cfg = self.root / "cfg" / "config.json"
+        self.cfg.parent.mkdir(parents=True, exist_ok=True)
+        self.custom = self.root / "custom-artifacts"
+        (self.custom / "artifacts").mkdir(parents=True, exist_ok=True)
+
+    def write_config(self, storage: Path, bom: bool = False) -> None:
+        import json
+
+        payload = json.dumps({"storage_dir": str(storage)}).encode("utf-8")
+        self.cfg.write_bytes((b"\xef\xbb\xbf" if bom else b"") + payload)
+        self.env["MUTEKI_CONFIG"] = str(self.cfg)
+
+    def put_artifact(self, directory: Path, aid: str = "acfg00001-abcdef") -> str:
+        import json
+
+        file = directory / "artifacts" / f"{aid}.json"
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(json.dumps({"id": aid, "tool": "pwsh", "ok": True, "content": "x"}), encoding="utf-8")
+        with (directory / "index.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"id": aid, "tool": "pwsh", "ok": True, "file": str(file)}) + "\n")
+        return aid
+
+    def test_config_storage_dir_is_used(self) -> None:
+        self.write_config(self.custom)
+        aid = self.put_artifact(self.custom)
+        self.board("fact", "入口", "可复用入口", "--artifact", aid)
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+
+    def test_env_overrides_config(self) -> None:
+        self.write_config(self.custom)
+        self.env["MUTEKI_ARTIFACT_DIR"] = str(self.artifacts)
+        aid = self.put_artifact(self.artifacts)
+        self.board("fact", "入口", "内容", "--artifact", aid)
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+        # 配置目录里的同名证据不应被用到
+        self.assertNotIn(str(self.custom), self.board("artifact", "list").stdout)
+
+    def test_bom_config_tolerated(self) -> None:
+        self.write_config(self.custom, bom=True)
+        aid = self.put_artifact(self.custom)
+        self.board("fact", "入口", "内容", "--artifact", aid)
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+
+    def test_missing_config_falls_back_without_crash(self) -> None:
+        self.env["MUTEKI_CONFIG"] = str(self.root / "nope.json")
+        self.board("artifact", "list")
+
+    def test_corrupt_config_falls_back_without_crash(self) -> None:
+        self.cfg.write_text("{ not json", encoding="utf-8")
+        self.env["MUTEKI_CONFIG"] = str(self.cfg)
+        self.board("artifact", "list")
+
+    def test_config_artifact_dir_alias(self) -> None:
+        import json
+
+        self.cfg.write_text(json.dumps({"artifact_dir": str(self.custom)}), encoding="utf-8")
+        self.env["MUTEKI_CONFIG"] = str(self.cfg)
+        aid = self.put_artifact(self.custom)
+        self.board("fact", "入口", "内容", "--artifact", aid)
+        self.assertEqual(self.query("SELECT level FROM facts WHERE id=1")[0][0], "fact")
+
+
 if __name__ == "__main__":
     unittest.main()
