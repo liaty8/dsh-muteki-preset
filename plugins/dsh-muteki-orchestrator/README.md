@@ -77,7 +77,10 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 **等待与越过**：
 
 - `onQuota: wait` **只作用于 `muteki_run` 的循环**（最多 `maxWaitMinutes`，等不到就停并给 `resumeAt`）。`dispatch` / `tick` / `cli` 立即返回错误，不阻塞界面。
-- `override_quota=true` + `override_reason="..."`：**仅 `mode: attended`**，显式越过本轮**速率**限制，往黑板写一条 observation（无证据，不算事实）并记 `overrides.jsonl`。
+- `override_quota=true` + `override_reason="..."`：**仅 `mode: attended`**，显式授权越过本轮**速率**限制。
+  **只要人显式表了态就留痕**——不管令牌是否真的不足、授权是否被拒，都会往黑板写一条 observation（无证据，不算事实）
+  并记 `overrides.jsonl`（带 `allowed` / `needed` / `blockedBy`）。令牌本来就够时 `overridden=false`、
+  `overrideNote` 说明「未实际放宽，仅记录授权」，但痕迹照样留下。
 - **成本上限与整题总闸越不过去**，`override_quota` 对它们无效；撞上时 run 会优雅收束（`stoppedReason: "budget"` + `overrideNote` 说明原因），而不是整个工具报错。
 - 批次内也照常判定：override 只放宽令牌，一轮里派到整题总闸就停。
 
@@ -123,6 +126,9 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 - `stagnationLimit: 0` 关闭熔断；返回值里的 `stagnantRounds` 始终如实计数。
 
 首解优先：flag 一出现就按 `flag` 收束，不会被误判成停滞。
+
+**前提：队列里得有足够任务。** 每轮只取 `limit` 条，队列先空就会先以 `stoppedReason: "empty"` 停止——
+只放 3 条任务时永远走不到 5 轮停滞。要实测熔断，队列里至少要有 `stagnationLimit × limit` 条任务。
 
 ## 依赖
 

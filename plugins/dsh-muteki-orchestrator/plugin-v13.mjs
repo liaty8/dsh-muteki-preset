@@ -422,15 +422,25 @@ export function apply(ctx, config) {
     },
   };
 
-  /** 越过速率限制要留痕：黑板写一条 observation（无证据，不算事实）+ 一行账本。 */
-  const logOverride = (challenge, cwd, reason) => {
+  /**
+   * 人工授权留痕：黑板写一条 observation（无证据，不算事实）+ 一行账本。
+   * **只要人显式表了态就留痕**，不管这次授权是否真的放宽了限制、是否被拒——
+   * 否则「令牌本来就够」时 override_quota 是静默 no-op，人在黑板上看不到自己的授权。
+   */
+  const logOverride = (challenge, cwd, reason, info = {}) => {
+    const allowed = info.allowed !== false;
+    const needed = info.needed === true;
+    const title = allowed ? "额度越过（人工授权）" : "额度越过被拒（人工授权尝试）";
+    const detail = allowed
+      ? needed
+        ? "已越过本轮派单速率限制。"
+        : "本轮令牌充足，未实际放宽任何限制，仅记录这次人工授权。"
+      : info.blockedBy === "mode"
+        ? "未生效：当前 mode 不是 attended，无人值守不允许越过额度。"
+        : `未生效：撞上 ${info.blockedBy || "成本/整题总闸"}，钱的闸不可越过。`;
     try {
       runBoard(
-        [
-          "fact",
-          "额度越过（人工授权）",
-          `题 ${challenge} 显式 override_quota：${reason}。只越过派单速率限制，成本与整题总闸仍然生效。`,
-        ],
+        ["fact", title, `题 ${challenge} 显式 override_quota：${reason}。${detail}成本与整题总闸始终生效。`],
         cwd,
       );
     } catch {
@@ -440,7 +450,14 @@ export function apply(ctx, config) {
       mkdirSync(config.storageDir, { recursive: true });
       appendFileSync(
         join(config.storageDir, "overrides.jsonl"),
-        JSON.stringify({ ts: Date.now(), challenge: challenge ?? "", reason }) + "\n",
+        JSON.stringify({
+          ts: Date.now(),
+          challenge: challenge ?? "",
+          reason,
+          allowed,
+          needed,
+          blockedBy: info.blockedBy || "",
+        }) + "\n",
         "utf8",
       );
     } catch {
@@ -454,27 +471,41 @@ export function apply(ctx, config) {
    */
   const ensureQuota = async (challenge, args, exec, cwd, allowWait = false) => {
     let state = quotaState(challenge);
-    if (state.ok) return { state, waitedMs: 0, overridden: false, overrideNote: "" };
     const onlyTokens = state.hits.every((hit) => hit.limit === "tokens");
+    const idle = { state, waitedMs: 0, overridden: false, rateBypassed: false, overrideRequested: false, overrideNote: "" };
 
     if (args?.override_quota === true) {
+      const reason = String(args.override_reason || "人工显式授权越过本轮速率限制");
       // 不抛异常：让调用方按「额度不足」正常停/拒，并把原因带出去。
       // 否则 run 跑到一半撞上钱的闸时会整个工具报错，而不是优雅收束。
       if (state.limits.mode !== "attended") {
+        logOverride(challenge, cwd, reason, { allowed: false, needed: !state.ok, blockedBy: "mode" });
         return {
-          state, waitedMs: 0, overridden: false,
-          overrideNote: "override_quota 只在 mode=attended（人主导）下可用；无人值守模式不允许越过额度。",
+          ...idle, overrideRequested: true,
+          overrideNote: "override_quota 只在 mode=attended（人主导）下可用；无人值守模式不允许越过额度（这次授权尝试已留痕）。",
         };
       }
-      if (!onlyTokens) {
+      if (!state.ok && !onlyTokens) {
+        const blockedBy = state.hits.map((hit) => hit.limit).join(",");
+        logOverride(challenge, cwd, reason, { allowed: false, needed: true, blockedBy });
         return {
-          state, waitedMs: 0, overridden: false,
-          overrideNote: "override_quota 只能越过派单速率限制，不能越过成本/整题总闸。",
+          ...idle, overrideRequested: true,
+          overrideNote: "override_quota 只能越过派单速率限制，不能越过成本/整题总闸（这次授权尝试已留痕）。",
         };
       }
-      logOverride(challenge, cwd, args.override_reason || "人工显式授权越过本轮速率限制");
-      return { state: { ...state, ok: true }, waitedMs: 0, overridden: true, overrideNote: "" };
+      const needed = !state.ok;
+      logOverride(challenge, cwd, reason, { allowed: true, needed });
+      return {
+        state: { ...state, ok: true },
+        waitedMs: 0,
+        overridden: needed,
+        rateBypassed: true,
+        overrideRequested: true,
+        overrideNote: needed ? "" : "本轮令牌充足，override_quota 未实际放宽限制，但已按人工授权留痕。",
+      };
     }
+
+    if (state.ok) return idle;
 
     let waitedMs = 0;
     if (allowWait && onlyTokens && state.limits.onQuota === "wait" && state.limits.maxWaitMinutes > 0) {
@@ -489,15 +520,16 @@ export function apply(ctx, config) {
       waitedMs = Date.now() - began;
       state = quotaState(challenge);
     }
-    return { state, waitedMs, overridden: false, overrideNote: "" };
+    return { ...idle, state, waitedMs };
   };
 
   const overrideParams = {
     override_quota: {
       type: "boolean",
       description:
-        "仅 mode=attended（人主导）有效：显式越过本轮派单速率限制（令牌不足）。" +
-        "不能越过成本上限与整题总闸。会往黑板写一条 observation 并记 overrides.jsonl 留痕。",
+        "显式授权越过本轮派单速率限制（仅 mode=attended 生效）。" +
+        "无论令牌是否真的不足、授权是否被拒，都会留痕（黑板 observation + overrides.jsonl）。" +
+        "不能越过成本上限与整题总闸。",
     },
     override_reason: {
       type: "string",
@@ -688,7 +720,7 @@ ${contextText}
      证据 id 必须先用 \`board.py artifact list\` 查真实存在的 a 开头 id；伪造会被 exit 2 拒绝。
    - 实测排除的方向：\`board.py deadend "<原因>" --tested "<测试范围>" --observed "<实际结果>"\`
    - 候选 flag：\`board.py flag "<值>" --source "<来源>"\`
-   - 完成后：\`board.py task done ${task.id}\`
+   - 完成后：\`board.py task done ${task.id}\`（id 写数字或带前缀都行：\`task done ${task.id}\` 等价于 \`task done t${task.id}\`）
 4. 不写没有证据的"事实"；不确定的内容省略 --artifact（会记为 observation）。
 5. 提交完立即结束，不要续做别的任务。`);
 
@@ -1006,6 +1038,7 @@ ${contextText}
           resumeAt: { type: "number" },
           waitedMs: { type: "number" },
           overridden: { type: "boolean" },
+          overrideRequested: { type: "boolean" },
           overrideNote: { type: "string" },
           stagnantRounds: { type: "number" },
         },
@@ -1024,7 +1057,7 @@ ${contextText}
               ? "\n已写一条 review（kind=gap）：先 board.py review list --status open 看意见，再决定换方向还是换引擎，不要原样重跑。"
               : "") +
             (value.quota
-              ? `\n额度（${value.quota.mode}）：令牌 ${value.quota.tokens}/${value.quota.burstRuns}` +
+              ? `\n额度（${value.quota.mode}，成本口径 ${value.quota.costBasis}）：令牌 ${value.quota.tokens}/${value.quota.burstRuns}` +
                 `（回填 ${value.quota.runsPerHour} 次/h，${value.quota.onQuota}）；` +
                 `整题 ${value.quota.runsTotal}/${value.quota.runsPerChallenge} 次、` +
                 `$${value.quota.costTotal}/${value.quota.costPerChallenge}；` +
@@ -1069,6 +1102,7 @@ ${contextText}
       let waitedMs = 0;
       let overridden = false;
       let overrideNote = "";
+      let overrideRequested = false;
       const limits = resolveLimits(config);
       let progress = progressSnapshot(cwd);
       let stagnantRounds = 0;
@@ -1090,15 +1124,16 @@ ${contextText}
         waitedMs += gate.waitedMs;
         overridden = overridden || gate.overridden;
         overrideNote = gate.overrideNote || overrideNote;
+        overrideRequested = overrideRequested || gate.overrideRequested;
         if (!gate.state.ok) {
           stoppedReason = "budget";
           break;
         }
-        // 本轮批次内的额度判定：override 只放宽「派单令牌」，成本与整题总闸照常拦。
+        // 本轮批次内的额度判定：人工授权只放宽「派单令牌」，成本与整题总闸照常拦。
         const roundQuotaOk = () => {
           const state = quotaState(challenge);
           if (state.ok) return true;
-          return gate.overridden && state.hits.every((hit) => hit.limit === "tokens");
+          return gate.rateBypassed && state.hits.every((hit) => hit.limit === "tokens");
         };
         const tasks = openTasks(cwd).slice(0, limit);
         if (tasks.length === 0) {
@@ -1223,6 +1258,7 @@ ${contextText}
         resumeAt: tokenHit ? Date.now() + (tokenHit.waitMs || 0) : 0,
         waitedMs,
         overridden,
+        overrideRequested,
         overrideNote,
         stagnantRounds,
       };

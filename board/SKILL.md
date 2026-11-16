@@ -76,19 +76,19 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 返回值要看这几个字段：
 
 - `stoppedReason`：`empty` / `flag` / `timeout` / `budget` / `rounds` / `stagnation`；
-- `quota.limitHit`：命中哪条闸（`tokens` / `costPerHour` / `runsPerChallenge` / `costPerChallenge`）；
+- `quota.limitHit`：命中哪条闸（`tokens` / `costPerHour` / `runsPerChallenge` / `costPerChallenge`）；`quota.costBasis`：成本口径（`estimate` / `actual`）；
 - `resumeAt`：下一个令牌回填的时刻；`waitedMs`：本轮等过多久；
 - `stagnantRounds`：连续几轮没有新增带证据 fact / flag；
-- `overridden` / `overrideNote`：本轮是否显式越过速率限制、越过为什么没生效。
+- `overridden` / `overrideRequested` / `overrideNote`：本轮是否真的放宽了速率限制、是否请求过人工授权、以及授权为什么没生效。
 
 额度规则（按题独立，`mode` 决定预设，显式配置优先）：
 
 - **派单速率用令牌桶**：`attended`（人主导，默认）桶容量 60、按 40 次/小时回填，令牌不足时自动等（最多 10 分钟）；`unattended`（无人值守）桶容量 12、按 12 次/小时回填，不足立即停、绝不等待。
 - **成本闸**：attended $15/小时、整题 $50；unattended $5/小时、整题 $15。**整题派单总闸**：attended 300 / unattended 100。
 - 每小时成本上限等窗口滚动就恢复；**整题总闸不随时间恢复、也不能被越过**——打满就 `task drop` 放弃该题、`use` 切到新题（新题从满额度开始），或让人调高配置。
-- 人在看着且只是令牌不够时，可带 `override_quota=true`（仅 attended）显式越过本轮速率限制，会往黑板写一条 observation 留痕；成本与总闸越不过去。
+- 人在看着时可带 `override_quota=true`（仅 attended）显式授权越过本轮速率限制。**只要表了态就留痕**：不管令牌够不够、授权是否被拒，都会写一条 observation + `overrides.jsonl`（带 `allowed`/`needed`/`blockedBy`）；令牌本来就够时 `overridden=false`、`overrideNote` 说明「未实际放宽，仅记录授权」。成本与总闸越不过去。
 
-**停滞熔断**：进展只认「新增带证据的 fact」或「新增 flag」，observation 与 deadend 不算。连续 `stagnationLimit` 轮（attended 5 / unattended 3，0=关闭）无进展会写一条 `review --kind gap` 并停下等人换思路——**这时不要原样重跑，先 `review list --status open` 看意见**，再决定换方向、换入口还是换 `muteki_cli` 异构打一遍。
+**停滞熔断**：进展只认「新增带证据的 fact」或「新增 flag」，observation 与 deadend 不算。连续 `stagnationLimit` 轮（attended 5 / unattended 3，0=关闭）无进展会写一条 `review --kind gap` 并停下等人换思路——**这时不要原样重跑，先 `review list --status open` 看意见**，再决定换方向、换入口还是换 `muteki_cli` 异构打一遍。注意前提是队列里有足够任务：每轮只取 `limit` 条，**队列先空会先以 `empty` 停止**，所以只放 3 条任务时看不到 5 轮停滞。
 
 `muteki_tick` 只驱动一轮调度：从任务队列取最高优先级的 open 任务（limit 1-3），原子认领后各派一个全新上下文的子代理，立即返回。
 

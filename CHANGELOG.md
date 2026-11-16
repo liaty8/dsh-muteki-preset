@@ -8,6 +8,61 @@
 
 ---
 
+## [1.10.0] - 2026-11-16
+
+DSH 实机验证（v1.9.1）反馈的一批问题合并处理。**发布节奏从本版起改为「3–5 个问题一个 release」**，
+不再一个问题一发；往届 21 个碎 release 已按阶段合并为 4 个（tag 与 commit 全部保留）。
+
+### Fixed
+
+- **`override_quota` 在令牌充足时是静默 no-op**（实机 D 组不符的根因）。
+  旧实现先 `if (state.ok) return`，授权分支根本走不到，于是黑板没有 observation、`overrides.jsonl` 也不生成。
+  改为：**只要人显式表了态就留痕**，不论令牌是否真的不足、授权是否被拒。
+  - `logOverride` 增加 `allowed` / `needed` / `blockedBy` 三个维度，标题区分「额度越过（人工授权）」与「额度越过被拒（人工授权尝试）」；
+  - 令牌充足时 `overridden=false`、`overrideNote` 说明「未实际放宽，仅记录授权」，但痕迹照样留下；
+  - unattended 下被拒、撞上成本/整题总闸被拒，**同样留痕**（`allowed:false` + `blockedBy`），便于审计「谁在什么时候试图越过什么」。
+- **`quota.costBasis` 有字段但不在返回文本里渲染**（实机 C 组 ⚠️）：run 的 render 现在显示「成本口径 estimate/actual」。
+- **worker 写 `task done t1` 被拒**：`workerPrompt` 的硬要求里明确「id 写数字或带前缀都行」，
+  配合 1.9.2 的黑板侧放宽，子代理不必再绕弯。
+
+### Changed
+
+- `ensureQuota` 返回值区分 **`rateBypassed`**（本轮授权是否放宽了速率闸，供批次内判定用）与
+  **`overridden`**（是否真的需要放宽）；run 输出新增 **`overrideRequested`**。
+  批次内判定改用 `rateBypassed`，所以「令牌充足时授权」也能覆盖整轮，而不是只覆盖第一次派单。
+- 文档补上**停滞熔断的前提**：每轮只取 `limit` 条，**队列先空会先以 `empty` 停止**；
+  只放 3 条任务时永远走不到 5 轮停滞，要实测至少放 `stagnationLimit × limit` 条。
+  （实机 C 组第一次「不符」正是这个原因，不是缺陷。）
+- `README.md` / `board/SKILL.md` / 插件 README：override 留痕语义、`overrideRequested`、`costBasis` 渲染、停滞前提。
+- 本 CHANGELOG 删掉 1.6.0 的「后续」节；**此后 release 正文与 CHANGELOG 不再写「接下来 / 下一步 / 后续」这类展望段落**。
+
+### Added
+
+- 插件测试 +4（41 → **45**）：令牌充足时授权也留痕（`allowed:true, needed:false`）、
+  unattended 授权被拒仍留痕（`blockedBy:"mode"`）、撞整题总闸被拒仍留痕（`blockedBy:"runsPerChallenge"`）、
+  run 区分 `overrideRequested` 与 `overridden`。
+
+### Migration
+
+- 无黑板 schema 变更。`overrides.jsonl` 旧条目没有 `allowed`/`needed`/`blockedBy` 字段，读时按缺省处理即可。
+- 行为变化：显式带 `override_quota=true` 时**总会**在黑板多一条 observation。这是有意的——人工授权必须可见。
+- 插件覆盖后需重启 DSH。
+
+### 验证
+
+```bash
+DSH_NODE_MODULES=<profile>/node_modules node --test tests/test_orchestrator.mjs   # 45 pass
+python -m unittest discover -s tests                                             # Ran 136 tests ... OK
+```
+
+实机已验证通过的部分（v1.9.1，本轮未改动）：预设加载与五个工具、`mode: attended` 生效、
+真实 DSH `subagent/start|end` 事件被捕获并按墙钟归因到正确题名（`basis=estimate-time`、
+`usdActual=usdEstimate×0.1`）、totals/runs/buckets 三处同步、停滞熔断在 5 轮触发并写 gap review。
+
+[1.10.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.10.0
+
+---
+
 ## [1.9.2] - 2026-11-16
 
 来自 DSH 实机验证反馈：**worker 写 `task done t1` 被拒**。缺陷修复（可用性），升 patch。
@@ -338,11 +393,6 @@ DSH_NODE_MODULES=<profile>/node_modules node --test tests/test_orchestrator.mjs 
 - 覆盖点：两套预设与非法值回落、显式覆盖优先、老配置不被改、每小时/整题两类闸门、
   小时窗口滚过去后总闸仍生效、按题独立、tick 部分派单、cli 成本总闸、
   run 的 budget 停止与 quota 明细、unattended 预设、empty/flag 停止与任务回收回归。
-
-### 后续（同一批额度改造）
-
-令牌桶消除「打满后干等 60 分钟」的悬崖 + `onQuota` 等待 + 显式越过额度；
-停滞熔断（连续无进展即停）；成本口径补全（DSH worker 花费记账 + basis 标注）。
 
 [1.6.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.6.0
 

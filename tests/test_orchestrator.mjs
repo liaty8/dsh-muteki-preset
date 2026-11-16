@@ -546,6 +546,69 @@ test("stagnation: 出现 flag 时首解优先，不误判停滞", { skip: SKIP_R
 
 const costsOf = (h) => readJson(h.ledger("costs.json"), []) || [];
 
+// ── 显式授权一律留痕（v1.9.3）─────────────────────────────────────────────
+
+const overrideLines = (h) =>
+  readFileSync(h.ledger("overrides.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((x) => JSON.parse(x));
+
+test("override: 令牌充足时显式授权也留痕，并说明未实际放宽", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: { burstRuns: 60 } }, async (h) => {
+    await h.call("muteki_dispatch", { prompt: "一步", override_quota: true, override_reason: "人在看着，先表个态" });
+    assert.equal(h.activations.length, 1);
+    assert.match(h.board(["search", "额度越过"]).stdout, /额度越过（人工授权）/);
+    assert.match(h.board(["search", "未实际放宽"]).stdout, /未实际放宽/);
+    const rows = overrideLines(h);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].allowed, true);
+    assert.equal(rows[0].needed, false);
+    assert.equal(rows[0].reason, "人在看着，先表个态");
+  });
+});
+
+test("override: unattended 下的授权尝试被拒但仍留痕", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: { mode: "unattended", burstRuns: 1, maxRunsPerHour: 1 } }, async (h) => {
+    await h.call("muteki_dispatch", { prompt: "第一步" });
+    await assert.rejects(
+      () => h.call("muteki_dispatch", { prompt: "第二步", override_quota: true, override_reason: "试试" }),
+      /只在 mode=attended/,
+    );
+    const rows = overrideLines(h);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].allowed, false);
+    assert.equal(rows[0].blockedBy, "mode");
+    assert.match(h.board(["search", "额度越过被拒"]).stdout, /额度越过被拒/);
+  });
+});
+
+test("override: 撞上整题总闸时授权被拒但仍留痕", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: { burstRuns: 100, maxRunsPerChallenge: 1 } }, async (h) => {
+    await h.call("muteki_dispatch", { prompt: "第一步" });
+    await assert.rejects(
+      () => h.call("muteki_dispatch", { prompt: "第二步", override_quota: true }),
+      /不能越过成本\/整题总闸/,
+    );
+    const rows = overrideLines(h);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].allowed, false);
+    assert.equal(rows[0].blockedBy, "runsPerChallenge");
+  });
+});
+
+test("override: run 区分「请求过授权」与「真的放宽了」", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: { burstRuns: 100, maxRunsPerHour: 100 } }, async (h) => {
+    h.board(["use", "t-idle-override"]);
+    h.seedTask("任务一");
+    const out = await h.call("muteki_run", {
+      challenge: "t-idle-override", limit: 1, max_rounds: 3,
+      override_quota: true, override_reason: "全程令牌充足",
+    });
+    assert.equal(out.overrideRequested, true);
+    assert.equal(out.overridden, false);
+    assert.match(out.overrideNote, /未实际放宽/);
+    assert.equal(overrideLines(h)[0].needed, false);
+  });
+});
+
 test("cost: DSH worker 结束后按墙钟估算入账，并归到正确的题", { skip: SKIP_REASON }, async () => {
   await withHarness(
     { config: { workerUsdPerMinute: 6 }, workerDelayMs: 120 },

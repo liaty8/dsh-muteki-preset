@@ -246,8 +246,8 @@ board.py context --all     # 跨题审计
 - **为什么用令牌桶而不是滚动小时窗口**：滚动窗口是悬崖——打满上限后最坏要干等 60 分钟才腾出 1 个额度。令牌桶把速率限制变成「容量 + 回填」：开局能一口气派 60 个把 recon 与第一轮 exp 全铺出去，之后按 40 次/小时持续供给。硬题的派单本来就是前密后疏。
 - **为什么要整题总闸**：每小时上限只防「短时间失控」，一道硬题连打八小时照样能烧穿预算；`totals.json` 按题累计、跨小时不清零。
 - **`onQuota: wait` 只作用于 `muteki_run` 的循环**：令牌不足时等回填（最多 `maxWaitMinutes`），等不到就停并给 `resumeAt`（下一个令牌的时刻）。`dispatch` / `tick` / `cli` 立即返回，不阻塞界面。无人值守默认 `stop`，绝不自作主张等待。
-- **`override_quota=true`（仅 attended）**：人显式越过本轮**速率**限制，往黑板写一条 observation + `overrides.jsonl` 留痕。**成本上限与整题总闸越不过去**——那是钱的闸。
-- **停滞熔断才是硬题该撞的闸**：每轮结束比较「最新带证据 fact 的 id + flag 条数」，连续 `stagnationLimit` 轮没有前进就停（`stoppedReason: "stagnation"`），并写一条 `review --kind gap` 提示人工换思路。**observation 与 deadend 不算进展**——排除方向有价值，但连续几轮只在排除方向说明该换入口了，而不是继续烧额度重试。
+- **`override_quota=true`（仅 attended）**：人显式授权越过本轮**速率**限制。**只要表了态就留痕**——不管令牌是否真的不足、授权是否被拒，都往黑板写一条 observation + `overrides.jsonl`（带 `allowed`/`needed`/`blockedBy`）。**成本上限与整题总闸越不过去**——那是钱的闸。
+- **停滞熔断才是硬题该撞的闸**：每轮结束比较「最新带证据 fact 的 id + flag 条数」，连续 `stagnationLimit` 轮没有前进就停（`stoppedReason: "stagnation"`），并写一条 `review --kind gap` 提示人工换思路。**observation 与 deadend 不算进展**——排除方向有价值，但连续几轮只在排除方向说明该换入口了，而不是继续烧额度重试。前提是队列里有足够任务：每轮只取 `limit` 条，**队列先空会先以 `empty` 停止**，要实测熔断至少放 `stagnationLimit × limit` 条任务。
 - 切到新题不继承旧题额度；切回旧题时额度继续累计。
 - 四个入口共用同一套判定（`quotaState`），不会口径分叉；`muteki_run` 返回 `quota` 明细、`limitHit`、`resumeAt`、`waitedMs`、`overridden`、`overrideNote`。
 - **成本账本现在两种引擎都记**：`muteki_cli` 记 Claude Code 上报的 `total_cost_usd`（`basis: estimate-anthropic`）；DSH 子代理在 `subagent/end` 时按墙钟时间 × `workerUsdPerMinute` 估算（`basis: estimate-time`）。已核对 DSH 0.2.2-rc.3 的 `subagent/end` payload **不带 token usage**，所以只能估，并如实标注；将来版本带上 usage/costUsd 会自动改用真实值（`basis: actual`）。
