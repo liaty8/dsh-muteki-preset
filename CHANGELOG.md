@@ -8,6 +8,55 @@
 
 ---
 
+## [1.3.0] - 2026-11-16
+
+对应路线图条目 **B2（黑板侧）：context 截断会先丢掉死路**。新能力，升 minor。
+
+### 问题
+
+`cmd_context` 的打印顺序是 flags → claims → tasks → reviews → facts（**旧→新**）→ observations
+→ superseded → **deadends（最后）**，而上游 orchestrator 是盲目 `slice(0, 6000)` / `slice(0, 8000)`。
+题一复杂，被切掉的恰好是「避免重复踩坑」的死路与最新事实——黑板最核心的价值被静默丢弃。
+
+### Added
+
+- **`context --budget N`**：字符预算（0=不限）。超出时**按段落优先级逐行截断**，
+  并在末尾明确标注「哪一段被截断、哪些段未显示」，不再静默丢内容。
+- **`context --section a,b,c`**：自定义段落与顺序；未知段落名 exit 2 并列出可选值。
+- 可选段落：`flags` / `deadends` / `facts` / `tasks` / `reviews` / `observations` / `claims` / `superseded`。
+- `tests/test_board.py` 新增 `TestContextBudgetAndOrder`（9 个用例）：死路先于事实、
+  事实与死路均新→旧、预算截断并标注、高优先级 flag 在极小预算下仍保留、
+  无预算时不出现截断标记、自定义段落顺序、未知段落 rc=2、`--json` 输出结构不变。
+
+### Changed
+
+- **默认段落顺序改为**：`flags → deadends → facts → tasks → reviews → observations → claims → superseded`。
+  死路从最后提到第二位，事实从「旧→新」改为「新→旧」（标题文案原本就写「新→旧」，此前与实现不符）。
+- `context` 渲染重构为「先构建段落、再按顺序与预算装配」，`--json` 分支完全不变。
+- `board/SKILL.md` 补 `--budget` / `--section` 用法与默认顺序说明。
+- 版本号同步到 `1.3.0`。
+
+### 兼容性
+
+- `--json` 输出结构与字段**完全不变**（上游插件可继续消费）。
+- 不带新参数时仍输出全部段落，只是**顺序变化**；依赖固定文本顺序的脚本需改用 `--json` 或 `--section`。
+- 不涉及 schema 变更，无需迁移。
+- orchestrator 侧改用 `context --json` 自行渲染（不再切字符串）属 DSH 运行时改动，
+  留待需要 DSH 验证的批次处理；本 release 只动黑板。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 94 tests ... OK
+python board/board.py context --budget 6000
+python board/board.py context --section deadends,facts,tasks
+python board/board.py --version           # muteki-board 1.3.0
+```
+
+[1.3.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.3.0
+
+---
+
 ## [1.2.0] - 2026-11-16
 
 对应路线图条目 **A6：证据门只验「存在」，不验「相关」**。新能力，升 minor。

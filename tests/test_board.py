@@ -513,5 +513,76 @@ class TestQuoteRelevance(BoardCase):
         self.assertEqual(payload["quote_missing"], [])
 
 
+class TestContextBudgetAndOrder(BoardCase):
+    """B2：context 段落优先级、新→旧排序、字符预算截断。"""
+
+    def _seed(self, deadends: int = 3, facts: int = 3) -> None:
+        aid = self.make_artifact()
+        for i in range(facts):
+            self.board("fact", f"事实{i}", f"结论{i}", "--artifact", aid)
+        for i in range(deadends):
+            self.board("deadend", f"方向{i}", "--tested", "范围" * 20, "--observed", "结果" * 20)
+        self.board("task", "add", "待办任务")
+        self.board("fact", "推测", "尚未证实")
+
+    def test_deadends_come_before_facts(self) -> None:
+        self._seed()
+        out = self.board("context").stdout
+        self.assertLess(out.index("## 已排除的方向"), out.index("## 已证实的事实"))
+
+    def test_facts_newest_first(self) -> None:
+        self._seed()
+        out = self.board("context").stdout
+        self.assertLess(out.index("事实2"), out.index("事实0"))
+
+    def test_deadends_newest_first(self) -> None:
+        self._seed()
+        out = self.board("context").stdout
+        self.assertLess(out.index("方向2"), out.index("方向0"))
+
+    def test_budget_truncates_and_marks(self) -> None:
+        self._seed(deadends=30, facts=5)
+        out = self.board("context", "--budget", "800").stdout
+        self.assertIn("## 已排除的方向", out)
+        self.assertIn("预算 800", out)
+        self.assertIn("截断", out)
+        # 低优先级段落不应出现
+        self.assertNotIn("## 未证实观察", out)
+        self.assertNotIn("## 任务队列", out)
+
+    def test_budget_keeps_high_priority_flags(self) -> None:
+        self._seed(deadends=30)
+        self.board("flag", "flag{test}", "--source", "响应")
+        out = self.board("context", "--budget", "1200").stdout
+        self.assertIn("flag{test}", out)
+
+    def test_no_budget_no_truncation_marker(self) -> None:
+        self._seed(deadends=30)
+        out = self.board("context").stdout
+        self.assertNotIn("预算", out)
+        self.assertIn("## 未证实观察", out)
+        self.assertIn("## 任务队列", out)
+
+    def test_section_custom_order(self) -> None:
+        self._seed()
+        out = self.board("context", "--section", "tasks,deadends").stdout
+        self.assertIn("## 任务队列", out)
+        self.assertIn("## 已排除的方向", out)
+        self.assertNotIn("## 已证实的事实", out)
+        self.assertLess(out.index("## 任务队列"), out.index("## 已排除的方向"))
+
+    def test_unknown_section_returns_2(self) -> None:
+        self.board("context", "--section", "bogus", expect=2)
+
+    def test_json_output_unchanged(self) -> None:
+        import json
+
+        self._seed()
+        data = json.loads(self.board("context", "--json").stdout)
+        for key in ("flags", "facts", "observations", "deadends", "tasks", "reviews", "claims", "superseded"):
+            self.assertIn(key, data)
+        self.assertEqual(len(data["deadends"]), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

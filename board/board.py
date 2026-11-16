@@ -58,7 +58,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -869,84 +869,145 @@ def cmd_context(args: argparse.Namespace) -> int:
         return 0
 
     scope_note = "全部题" if all_flag else f"当前题 {ch}"
-    print(f"# Muteki 黑板 · {scope_note} · {db_path()}")
-    print()
-    print(f"证据库：{artifact_index_path()}")
-    print()
-    if flags:
-        print("## 已获得的 flag / 候选")
-        for row in flags:
-            data = dict(row)
-            arts = json.loads(data.get("artifacts") or "[]")
-            status = data.get("status") or "candidate"
+    header = [
+        f"# Muteki 黑板 · {scope_note} · {db_path()}",
+        "",
+        f"证据库：{artifact_index_path()}",
+        "",
+    ]
+
+    # B2：按 section 组织，默认优先级 flags → deadends → facts(新→旧) → tasks →
+    # reviews → observations → claims → superseded。此前 deadends 排在最后，
+    # 上游按字符数截断时最先被切掉的恰好是「避免重复踩坑」的死路。
+    sections: dict[str, list[str]] = {}
+
+    body: list[str] = []
+    for row in flags:
+        data = dict(row)
+        arts = json.loads(data.get("artifacts") or "[]")
+        status = data.get("status") or "candidate"
+        body.append(
+            f"- g{row['id']} [{status}] `{row['value']}`  "
+            f"({row['source'] or '未注明来源'}, {row['created_at']}, 题 {row['challenge']})"
+        )
+        body.append(f"  证据：{', '.join(arts) if arts else '（未绑定，建议补 --artifact）'}")
+        if data.get("verified_by"):
+            body.append(f"  判定依据：{short(data['verified_by'], 200)}")
+        if data.get("note"):
+            body.append(f"  备注：{short(data['note'], 200)}")
+    if body:
+        sections["flags"] = ["## 已获得的 flag / 候选"] + body
+
+    body = []
+    for row in deadends:
+        arts = json.loads(row["artifacts"] or "[]")
+        suffix = f"  证据：{', '.join(arts)}" if arts else ""
+        body.append(f"- d{row['id']} {row['reason']}{suffix}")
+        if row["tested"]:
+            body.append(f"  测了什么：{short(row['tested'], 200)}")
+        if row["observed"]:
+            body.append(f"  实际看到：{short(row['observed'], 200)}")
+    if body:
+        sections["deadends"] = ["## 已排除的方向（新→旧）"] + body
+
+    body = []
+    for row in facts:
+        arts = json.loads(row["artifacts"] or "[]")
+        body.append(f"- f{row['id']} {row['title']}  证据：{', '.join(arts) or '（无）'}")
+        body.append(f"  {short(row['content'])}")
+        if row["evidence"]:
+            body.append(f"  依据：{short(row['evidence'], 200)}")
+    sections["facts"] = ["## 已证实的事实（带工具证据，新→旧）"] + (
+        body or ["（空：当前题还没有带工具证据的结论）"]
+    )
+
+    body = []
+    for row in tasks:
+        owner = f"  归 {row['owner']}" if row["owner"] else ""
+        body.append(f"- t{row['id']} [{row['status']}] p{row['priority']} {row['title']}{owner}")
+        if row["detail"]:
+            body.append(f"  {short(row['detail'], 240)}")
+    if body:
+        sections["tasks"] = ["## 任务队列（open/claimed，下一步可派单）"] + body
+
+    body = []
+    for row in reviews:
+        target = f" → {row['target']}" if row["target"] else ""
+        body.append(f"- r{row['id']} [{row['kind']}]{target} {short(row['note'], 240)}")
+    if body:
+        sections["reviews"] = ["## 待处理复核意见（Reviewer）"] + body
+
+    body = []
+    for row in observations:
+        body.append(f"- f{row['id']} {row['title']}")
+        body.append(f"  {short(row['content'])}")
+    if body:
+        sections["observations"] = ["## 未证实观察（不要当成结论传给下一步）"] + body
+
+    body = []
+    for row in claims:
+        body.append(
+            f"- {row['lane']}  归 {row['owner']}，剩余 {int(row['expires_at']) - now_ts}s，"
+            f"note: {row['note'] or '无'}"
+        )
+    if body:
+        sections["claims"] = ["## 进行中的认领（别碰别人的 lane）"] + body
+
+    body = []
+    for row in superseded:
+        body.append(f"- f{row['id']} → 被 f{row['superseded_by']} 取代")
+    if body:
+        sections["superseded"] = ["## 已被推翻的旧结论"] + body
+
+    default_order = [
+        "flags", "deadends", "facts", "tasks", "reviews", "observations", "claims", "superseded",
+    ]
+    requested = getattr(args, "section", None)
+    if requested:
+        order = [s.strip() for s in str(requested).split(",") if s.strip()]
+        unknown = [s for s in order if s not in default_order]
+        if unknown:
             print(
-                f"- g{row['id']} [{status}] `{row['value']}`  "
-                f"({row['source'] or '未注明来源'}, {row['created_at']}, 题 {row['challenge']})"
+                f"未知 section：{', '.join(unknown)}（可选 {' / '.join(default_order)}）",
+                file=sys.stderr,
             )
-            print(f"  证据：{', '.join(arts) if arts else '（未绑定，建议补 --artifact）'}")
-            if data.get("verified_by"):
-                print(f"  判定依据：{short(data['verified_by'], 200)}")
-            if data.get("note"):
-                print(f"  备注：{short(data['note'], 200)}")
-        print()
-    if claims:
-        print("## 进行中的认领（别碰别人的 lane）")
-        for row in claims:
-            print(
-                f"- {row['lane']}  归 {row['owner']}，剩余 {int(row['expires_at']) - now_ts}s，"
-                f"note: {row['note'] or '无'}"
-            )
-        print()
-    if tasks:
-        print("## 任务队列（open/claimed，下一步可派单）")
-        for row in tasks:
-            owner = f"  归 {row['owner']}" if row["owner"] else ""
-            print(
-                f"- t{row['id']} [{row['status']}] p{row['priority']} "
-                f"{row['title']}{owner}"
-            )
-            if row["detail"]:
-                print(f"  {short(row['detail'], 240)}")
-        print()
-    if reviews:
-        print("## 待处理复核意见（Reviewer）")
-        for row in reviews:
-            target = f" → {row['target']}" if row["target"] else ""
-            print(f"- r{row['id']} [{row['kind']}]{target} {short(row['note'], 240)}")
-        print()
-    if facts:
-        print("## 已证实的事实（带工具证据，新→旧）")
-        for row in reversed(facts):
-            arts = json.loads(row["artifacts"] or "[]")
-            print(f"- f{row['id']} {row['title']}  证据：{', '.join(arts) or '（无）'}")
-            print(f"  {short(row['content'])}")
-            if row["evidence"]:
-                print(f"  依据：{short(row['evidence'], 200)}")
-        print()
+            return 2
     else:
-        print("## 已证实的事实\n（空：当前题还没有带工具证据的结论）\n")
-    if observations:
-        print("## 未证实观察（不要当成结论传给下一步）")
-        for row in reversed(observations):
-            print(f"- f{row['id']} {row['title']}")
-            print(f"  {short(row['content'])}")
-        print()
-    if superseded:
-        print("## 已被推翻的旧结论")
-        for row in superseded:
-            print(f"- f{row['id']} → 被 f{row['superseded_by']} 取代")
-        print()
-    if deadends:
-        print("## 已排除的方向（新→旧）")
-        for row in reversed(deadends):
-            arts = json.loads(row["artifacts"] or "[]")
-            suffix = f"  证据：{', '.join(arts)}" if arts else ""
-            print(f"- d{row['id']} {row['reason']}{suffix}")
-            if row["tested"]:
-                print(f"  测了什么：{short(row['tested'], 200)}")
-            if row["observed"]:
-                print(f"  实际看到：{short(row['observed'], 200)}")
-        print()
+        order = default_order
+
+    out = list(header)
+    budget = int(getattr(args, "budget", 0) or 0)
+    used = sum(len(line) + 1 for line in out)
+    omitted: list[str] = []
+    truncated: str | None = None
+    for pos, name in enumerate(order):
+        chunk = sections.get(name)
+        if not chunk:
+            continue
+        lines = chunk + [""]
+        if not budget:
+            out.extend(lines)
+            used += sum(len(line) + 1 for line in lines)
+            continue
+        added = 0
+        for line in lines:
+            cost = len(line) + 1
+            if used + cost > budget:
+                break
+            out.append(line)
+            used += cost
+            added += 1
+        if added < len(lines):
+            truncated = name
+            omitted = [n for n in order[pos + 1:] if sections.get(n)]
+            break
+    if truncated:
+        out.append(
+            f"（预算 {budget} 字符已用尽：「{truncated}」段被截断"
+            + (f"，未显示：{', '.join(omitted)}" if omitted else "")
+            + "；用 --section 调整优先级，或 --json 取全量）"
+        )
+    print("\n".join(out).rstrip())
     return 0
 
 
@@ -1244,6 +1305,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("context", help="打印当前黑板摘要")
     p.add_argument("--facts", type=int, default=12)
     p.add_argument("--deadends", type=int, default=12)
+    p.add_argument("--budget", type=int, default=0, help="字符预算，0=不限；超出时按 section 优先级截断并标注")
+    p.add_argument("--section", default=None, help="逗号分隔的段落顺序，如 deadends,facts,tasks；默认 flags,deadends,facts,tasks,reviews,observations,claims,superseded")
     p.add_argument("--json", action="store_true", help="输出结构化 JSON（供插件消费）")
     p.add_argument("--all", action="store_true", help="跨全部题查看")
     p.set_defaults(func=cmd_context)
