@@ -70,11 +70,65 @@
 超时就把范围记 deadend，不要反复重扫。
 ```
 
-### 不适合
+### 当前边界（未实现的三类场景）
 
 - 需要人机验证 / 真人交互的题（验证码、支付、短信登录）；
 - 不可信的恶意 challenge：本预设**不做沙箱隔离**，Worker 会真实执行命令、访问目标；
 - 多 flag 平台的自动提交：没有平台提交闭环，flag 仍需人工确认。
+
+---
+
+## 如果要做：实现路线
+
+下面三类是刻意留白的边界。它们的实现步骤、依赖与风险都不同，按「人机交互 → 沙箱 → 平台提交」的顺序做最省事。
+
+### 1. 人机验证 / 真人交互
+
+**现状**：子代理是无人值守的，遇到验证码只能把任务挂起或放弃。
+
+**实现步骤**
+
+1. **黑板加人工请求通道**：`board.py` 增加 `human` 表（或复用 `review` 的 `kind=human`），记录「哪个 task、缺什么、超时时间」；
+2. **主控暴露 `muteki_ask` 工具**：内部调 DSH 的 `ask_user_question`（GUI 弹窗），把请求转给真人；子代理不直接阻塞，而是 `commit-step` 挂起、任务回到 `open`；
+3. **人工结果写回**：用户在会话里回答 / 手动完成验证后，主控 `board.py human answer <id> "<结果>"`，再 `task reopen` 让 worker 继续；
+4. **浏览器态复用**：验证码页面用 `agent-browser`/ego-browser 打开，由用户在同一 profile 里完成（Cookie 会保留），子代理后续直接复用登录态；
+5. **超时熔断**：`human` 表带 TTL（例如 10 分钟），过期自动 `task drop`，不占派单额度。
+
+**关键依赖**：DSH 的 `ask_user_question` / HITL 能力；ego-browser 的持久 profile。
+**风险**：真人不在时整轮会空等；多个题同时要人时会互相打断，需要队列化提示。
+
+### 2. 不可信恶意 challenge（沙箱）
+
+**现状**：Worker 直接执行宿主命令，没有隔离。这是 DSH 插件的边界，不是能靠改 persona 解决的。
+
+**实现步骤**
+
+1. **选定隔离层**（三选一，按成本排序）：
+   - Windows **Sandbox / 一次性 VM**（最贴近官方 muteki 的建议）；
+   - **WSL2 + Docker 容器**跑 Worker（`muteki-worker` 镜像思路，容器内 `NOPASSWD sudo` 也不怕）；
+   - 低配版：Windows 本地低权限用户 + 工作目录限定 + 禁用 `muteki_cli` 的宿主环境。
+2. **派单时传隔离 cwd**：`muteki_dispatch/tick/run` 已有 `cwd` 参数，把它指向隔离目录；证据库与黑板也放在隔离目录下，避免宿主路径被写；
+3. **工具白名单**：在容器镜像里只装必要工具（nmap/python/pwntools 等），不要把宿主 PATH 透传进去；
+4. **入口校验**：对未知二进制先 `file`/`strings`/容器内 `strace`，禁止在宿主直接执行；
+5. **回收**：每轮结束销毁容器或重置快照，不在容器里保留凭据。
+
+**关键依赖**：Docker Desktop 或 WSL2；如果走容器，`muteki_cli` 与 `board.py` 的路径要改成容器内路径。
+**风险**：容器网络与靶机连通性、文件挂载权限（Windows 路径 → 容器路径）是最容易踩的坑；本机沙箱只能降低风险，不能承诺安全。
+
+### 3. 多 flag 收集 + 自动提交
+
+**现状**：`board.py flag` 只记候选，`muteki_run` 见 flag 即停；提交靠人。
+
+**实现步骤**
+
+1. **黑板加平台与提交记录**：`platform` 表（base_url、账号、token 加密存储）、`submit` 表（flag、平台响应、时间、正确/错误）；
+2. **多 flag 目标**：`muteki_run` 增加 `expected_flags` 参数；停止条件从「出现任意 flag」改为「本轮新增 flag 数 ≥ expected_flags」或队列空；
+3. **首个平台适配 CTFd**：`muteki_submit` 工具用 HTTP 登录（cookie/token）→ `POST /api/v1/challenges/attempt` → 解析 `status: correct|incorrect`；
+4. **结果回写**：correct → `flag` 标 verified、对应 task `done`、整轮收束；incorrect → flag 标 invalid，`task reopen` 该方向，记一条 deadend；
+5. **先 dry-run**：默认只打印「将要提交什么」，加 `--yes` 或配置项才真提交；比赛规则明确禁止自动提交时不启用。
+
+**关键依赖**：目标平台（CTFd / rCTF / GZCTF）的 API 与登录方式；账号 token 的安全存储。
+**风险**：平台风控 / 封号、比赛规则禁止脚本提交、不同平台 API 差异大；建议只在自己有权限的 CTFd 实例上先测。
 
 ---
 
