@@ -8,6 +8,57 @@
 
 ---
 
+## [1.5.1] - 2026-11-16
+
+来自 DSH 实机验证反馈：**`adopt` 的事件写进了库，却永远不出现在按题复盘里**。缺陷修复，升 patch。
+
+### 问题
+
+`cmd_adopt` 写 `adopted` 事件时 payload 只有 `target / moved / skipped`，没有 `challenge`；
+而 `report` 的时间线按 `payload["challenge"] == 当前题` 过滤，于是：
+
+- `report` / `report --json` 的时间线**永远看不到 adopted**（Markdown 里早已写好「迁移 N 条」的渲染分支，却收不到事件）；
+- `counts.events` 少计（实机验证：当前题实际 10 条相关事件，JSON 只报 9 条）；
+- `adopt --challenge 别的题` 时，这次迁移在目标题的复盘里同样消失。
+
+事件本身没丢（events 表里查得到，`challenge` 为 `None`），丢的是**按题可见性**。
+这是 A1 之后同一类缺陷的第二个变种：A1 是事件没提交，本次是事件提交了但没有归属维度。
+
+### Fixed
+
+- `cmd_adopt` 的 `adopted` payload 补 `challenge = target`（**目标题**，不是当前题；`--challenge` 指定时以它为准）。
+- `record()` 增加兜底：payload 缺 `challenge` 时自动补当前题；**显式给出的值不被覆盖**，且不修改调用方传入的 dict。
+  以后任何新事件类型忘了写归属，也不会再变成「写进库但按题复盘看不见」的黑洞。
+
+### Added
+
+- `tests/test_board.py`：`TestAdopt` 增 4 个用例（事件带目标题、出现在 report 时间线与 Markdown、
+  `--challenge` 时归属目标题而非当前题、`counts.events` 与库内同题事件数一致）；
+  新增 `TestEventChallengeGuard`（3 个用例，直接驱动 `record()`：缺字段自动补、显式值不覆盖、不污染调用方 payload）。
+
+### Migration
+
+无需迁移，不涉及 schema 变更。**历史 `adopted` 事件不回填**（append-only 纪律）：
+旧事件仍缺 challenge，按题复盘依旧看不到它们；要审计就用 `report --all` 或直接查 events 表。
+本版本之后发生的迁移正常可见。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests   # Ran 119 tests ... OK
+python board/board.py --version        # muteki-board 1.5.1
+```
+
+- **负向对照**（证明新用例真能抓住缺陷）：用 v1.5.0 的 `board.py` 跑本次新用例 →
+  `TestAdopt` 3 failures + `TestEventChallengeGuard` 1 error（`KeyError: 'challenge'`）。
+- **本地复验**：独立库 `use old-case` → `fact` → `use verify-151` → `adopt f1` →
+  `report --json` 的 timeline 为 `['challenge_switched', 'adopted']`、`counts.events = 2`；
+  Markdown 时间线显示 `adopted  迁移 1 条 → verify-151`。
+
+[1.5.1]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.5.1
+
+---
+
 ## [1.5.0] - 2026-11-16
 
 对应路线图条目 **B5：缺「复盘 / 下一步」出口**。新能力，升 minor。

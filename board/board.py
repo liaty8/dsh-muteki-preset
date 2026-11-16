@@ -60,7 +60,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -341,6 +341,15 @@ def _scope(conn: sqlite3.Connection, all_flag: bool = False) -> tuple[str, list]
 
 
 def record(conn: sqlite3.Connection, kind: str, payload: dict) -> None:
+    """写一条事件。
+
+    兜底：payload 缺 `challenge` 时自动补当前题。report 与按题审计都用
+    `payload["challenge"]` 过滤，缺字段的事件会「写进了库却永远不上时间线」
+    （v1.5.0 的 adopted 就是这样）。调用方显式给出的 challenge 优先，不被覆盖
+    ——例如 `adopt --challenge 别的题` 必须记目标题，而不是当前题。
+    """
+    if "challenge" not in payload:
+        payload = {**payload, "challenge": current_challenge(conn)}
     conn.execute(
         "INSERT INTO events (ts, kind, payload) VALUES (?, ?, ?)",
         (now(), kind, json.dumps(payload, ensure_ascii=False)),
@@ -1335,7 +1344,13 @@ def cmd_adopt(args: argparse.Namespace) -> int:
         moved.append({"id": raw, "table": table, "from": source, "to": target})
 
     if moved:
-        commit_with_event(conn, "adopted", {"target": target, "moved": moved, "skipped": skipped})
+        # challenge 必须是「迁移目标题」而不是当前题：adopt --challenge 可以迁到别的题。
+        # 缺这个字段会让 report 的按题过滤把整条事件丢掉（v1.5.0 缺陷）。
+        commit_with_event(
+            conn,
+            "adopted",
+            {"challenge": target, "target": target, "moved": moved, "skipped": skipped},
+        )
     print(
         f"归属迁移 → 题 {target}：成功 {len(moved)} 条"
         + (f"，跳过 {len(skipped)} 条" if skipped else "")

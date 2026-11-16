@@ -665,6 +665,112 @@ class TestAdopt(BoardCase):
         self.assertIn("flag{test}", out)
         self.assertIn("旧死路", out)
 
+    # --- v1.5.1：adopted 事件必须带 challenge，否则按题复盘永远看不到它 ---
+
+    def test_adopted_event_carries_target_challenge(self) -> None:
+        import json
+
+        self._seed_legacy()
+        self.board("adopt", "f1,d1")
+        rows = self.query("SELECT payload FROM events WHERE kind='adopted'")
+        self.assertEqual(len(rows), 1)
+        payload = json.loads(rows[0][0])
+        self.assertEqual(payload.get("challenge"), "web-new")
+        self.assertEqual(payload.get("target"), "web-new")
+
+    def test_adopted_event_visible_in_report_timeline(self) -> None:
+        import json
+
+        self._seed_legacy()
+        self.board("adopt", "f1,d1,g1")
+        data = json.loads(self.board("report", "--json").stdout)
+        kinds = [item["kind"] for item in data["timeline"]]
+        self.assertIn("adopted", kinds)
+        self.assertEqual(data["counts"]["events"], len(kinds))
+        md = self.board("report").stdout
+        self.assertIn("adopted", md)
+        self.assertIn("迁移 3 条", md)
+
+    def test_adopted_event_challenge_is_explicit_target(self) -> None:
+        import json
+
+        self._seed_legacy()
+        self.board("adopt", "f1", "--challenge", "web-other")
+        there = json.loads(self.board("report", "--challenge", "web-other", "--json").stdout)
+        self.assertIn("adopted", [item["kind"] for item in there["timeline"]])
+        here = json.loads(self.board("report", "--json").stdout)
+        self.assertNotIn("adopted", [item["kind"] for item in here["timeline"]])
+
+    def test_report_events_count_matches_challenge_events(self) -> None:
+        import json
+
+        self._seed_legacy()
+        self.board("adopt", "f1")
+        self.board("task", "add", "新任务")
+        data = json.loads(self.board("report", "--json").stdout)
+        expected = sum(
+            1
+            for (payload,) in self.query("SELECT payload FROM events")
+            if json.loads(payload).get("challenge") == "web-new"
+        )
+        self.assertGreater(expected, 0)
+        self.assertEqual(data["counts"]["events"], expected)
+
+
+class TestEventChallengeGuard(BoardCase):
+    """record() 兜底：事件缺 challenge 会「写进库但永远不上按题时间线」。
+
+    v1.5.0 的 adopted 就是这个缺陷。这里直接驱动 record()，确保以后任何
+    新事件类型忘了写 challenge 也会被自动补上，而显式给出的值不被覆盖。
+    """
+
+    def _module(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("board_under_test", BOARD_PY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _write_event(self, payload: dict) -> None:
+        from unittest import mock
+
+        mod = self._module()
+        with mock.patch.dict(os.environ, {"MUTEKI_BOARD_DB": str(self.db)}):
+            conn = mod.connect()
+            try:
+                mod.record(conn, "custom_probe", payload)
+                conn.commit()
+            finally:
+                conn.close()
+
+    def test_record_fills_missing_challenge(self) -> None:
+        import json
+
+        self.board("use", "web-guard")
+        self._write_event({"id": 1})
+        rows = self.query("SELECT payload FROM events WHERE kind='custom_probe'")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0][0])["challenge"], "web-guard")
+        data = json.loads(self.board("report", "--json").stdout)
+        self.assertIn("custom_probe", [item["kind"] for item in data["timeline"]])
+
+    def test_record_keeps_explicit_challenge(self) -> None:
+        import json
+
+        self.board("use", "web-guard")
+        self._write_event({"challenge": "web-explicit", "id": 2})
+        rows = self.query("SELECT payload FROM events WHERE kind='custom_probe'")
+        self.assertEqual(json.loads(rows[0][0])["challenge"], "web-explicit")
+        data = json.loads(self.board("report", "--json").stdout)
+        self.assertNotIn("custom_probe", [item["kind"] for item in data["timeline"]])
+
+    def test_record_does_not_mutate_caller_payload(self) -> None:
+        self.board("use", "web-guard")
+        payload = {"id": 3}
+        self._write_event(payload)
+        self.assertEqual(payload, {"id": 3})
+
 
 class TestReport(BoardCase):
     """B5：复盘报告（Markdown / JSON / 按题过滤 / 账本整合）。"""
