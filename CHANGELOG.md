@@ -8,6 +8,50 @@
 
 ---
 
+## [1.0.17] - 2026-11-16
+
+对应路线图条目 **S2：门禁分级（block / warn）**。按用户策略：只有「他人可利用 / 个人信息 / 涉及金钱」才阻断发布，
+不可利用的技术痕迹只提示，避免门禁因噪声过大而被关掉。
+
+### Changed
+
+- **`scripts/check_sensitive.py` 改为分级判定**：
+  - `block`（rc=1，阻止发布）：凭据字面值（api key / secret / token / password / cookie / authorization）、
+    已知 token 前缀（`ghp_` / `github_pat` / `sk-` / `AKIA` / `AIza` 等）、私钥头、JWT、
+    webhook 回连地址（他人可读写其中数据）、长 base64 密钥串、个人邮箱。
+  - `warn`（rc=0，只提示）：本机盘符路径与用户目录、IPv4（公开靶机不可利用）、flag 形态值（已解题目）、
+    本地会话 UUID、muteki-core 证据 id、长 hex（多为 sha256 摘要）、通用机器用户名。
+- 新增 `--strict`：把 warn 也当作阻断，供需要最高卫生标准的场合使用。
+- **本地黑名单支持分级**：`scripts/sensitive.local.txt` 行首加 `!` 表示 block，不加表示 warn。
+- 输出分 `[BLOCK]` / `[WARN]` 两段，并给出明确结论行；`--json` 增加 `severity`、`block_count`、
+  `warn_count`、`blocked`、`strict` 字段。
+- 门禁脚本自身输出强制 UTF-8（`sys.stdout.reconfigure`），修掉 Windows 控制台下的中文乱码。
+- README「发布前检查」一节改为分级说明表 + `--strict` 用法 + 黑名单 `!` 前缀约定。
+
+### Added
+
+- `tests/test_check_sensitive.py` 新增 `TestSeverity`（7 个用例）：规则分级映射、只有 warn 不阻断、
+  `--strict` 下 warn 阻断、凭据与个人邮箱阻断、noreply 邮箱豁免、黑名单 `!` 前缀为 block、
+  纯字符串黑名单默认 warn、干净文本无命中。
+
+### Migration
+
+- 无需迁移。**行为变化**：此前任何命中都 rc=1；现在只有 block 才 rc=1。
+  若你的 CI 依赖「任何命中即失败」，请改用 `--strict`。
+- 本地黑名单文件语义扩展（`!` 前缀），旧格式（无前缀）继续可用，按 warn 处理。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 51 tests ... OK
+python scripts/check_sensitive.py         # rc=0
+python scripts/check_sensitive.py --strict # rc=0
+```
+
+[1.0.17]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.0.17
+
+---
+
 ## [1.0.16] - 2026-11-16
 
 对应路线图条目 **A2：`read` 不支持任务 id、`search` 不覆盖任务与复核**。

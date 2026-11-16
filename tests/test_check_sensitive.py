@@ -125,5 +125,46 @@ class TestMasking(unittest.TestCase):
         self.assertIn("***", masked)
 
 
+class TestSeverity(unittest.TestCase):
+    """S2：分级策略——可利用凭据/个人信息/金钱相关 → block；不可利用技术痕迹 → warn。"""
+
+    def test_rule_severity_mapping(self) -> None:
+        sev = {name: s for name, _, _, s in gate.RULES}
+        for rule in ("credential-assign", "token-prefix", "private-key", "jwt", "webhook", "base64-secret", "email"):
+            self.assertEqual(sev[rule], gate.BLOCK, msg=rule)
+        for rule in ("drive-path", "unix-home", "ipv4", "flag-value", "uuid", "artifact-id", "hex-secret", "machine-user"):
+            self.assertEqual(sev[rule], gate.WARN, msg=rule)
+
+    def test_warn_only_does_not_block(self) -> None:
+        findings = gate.scan_text("x.md", "路径 D:" + "\\some\\where 与目标 203.0.113" + ".77", [])
+        self.assertTrue(findings)
+        self.assertFalse(gate.has_block(findings))
+        self.assertTrue(gate.has_block(findings, strict=True))
+
+    def test_credential_blocks(self) -> None:
+        key = "api" + "Key"
+        literal = "abcdefgh" + "ijkl1234567890"
+        findings = gate.scan_text("x.md", f'{key}: "{literal}"', [])
+        self.assertTrue(gate.has_block(findings))
+
+    def test_email_blocks_but_noreply_allowed(self) -> None:
+        findings = gate.scan_text("x.md", "联系 someone.somebody" + "@mailprovider.com", [])
+        self.assertTrue(gate.has_block(findings))
+        self.assertEqual(gate.scan_text("x.md", "user@users.noreply.github.com", []), [])
+
+    def test_denylist_bang_prefix_is_block(self) -> None:
+        blocked = gate.scan_text("x.md", "前缀 abc123xy 出现", [("abc123xy", gate.BLOCK)])
+        self.assertTrue(gate.has_block(blocked))
+        warned = gate.scan_text("x.md", "题名 web-99999", [("web-99999", gate.WARN)])
+        self.assertFalse(gate.has_block(warned))
+
+    def test_plain_string_denylist_defaults_to_warn(self) -> None:
+        findings = gate.scan_text("x.md", "题名 web-99999", ["web-99999"])
+        self.assertEqual(findings[0]["severity"], gate.WARN)
+
+    def test_clean_text_has_no_findings(self) -> None:
+        self.assertEqual(gate.scan_text("x.md", "黑板按题隔离，事实必须带证据。", []), [])
+
+
 if __name__ == "__main__":
     unittest.main()

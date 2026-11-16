@@ -412,21 +412,28 @@ python scripts/check_sensitive.py
 # 只扫描本次要提交的内容（取 git 索引里的版本）
 python scripts/check_sensitive.py --staged
 
+# 最高卫生标准：连不可利用的技术痕迹也阻断
+python scripts/check_sensitive.py --strict
+
 # CI / 机器可读
 python scripts/check_sensitive.py --json
 ```
 
-退出码：`0` 干净、`1` 发现疑似敏感信息、`2` 用法/环境错误。**发现即阻止发布**，先改成占位符或合成示例。
+**分级策略**——按「他人能否利用 / 是否个人信息 / 是否涉及金钱」判定，而不是一刀切：
 
-规则覆盖：盘符绝对路径、用户目录路径、IPv4、flag 形态的值、UUID、muteki-core 证据 id、JWT、私钥头、
-webhook 地址、长 hex/base64、已知 token 前缀（`ghp_`/`sk-`/`AKIA` 等）、邮箱、机器用户名、凭据字面值。
+| 分级 | 含义 | 覆盖 | 退出码 |
+|---|---|---|---|
+| `block` | 可被他人直接利用的凭据与身份数据 | token / API key / 密码 / cookie 字面值、私钥、JWT、webhook 回连地址（他人可读写其中数据）、长 base64 密钥串、个人邮箱 | `1`，**阻止发布** |
+| `warn` | 不可利用的技术痕迹 | 本机目录路径、题名与端口、证据 id、本地会话 UUID、已解题目的 flag 值、公开靶机 IP、sha256 摘要、通用机器用户名 | `0`，只提示 |
+
+`2` 表示用法/环境错误。加 `--strict` 后 warn 也按 `1` 处理。
 输出只打印**掩码后**的片段（`abc***gh(len=8)`），不会把完整敏感值回显到终端或 CI 日志。
 
-**本地黑名单**：把你自己的真实靶机 IP、题名、证据 id 前缀、机器用户名写进 `scripts/sensitive.local.txt`
-（每行一个字面量）。该文件已被 `.gitignore` 排除，**不会提交**，但门禁会用它扫描仓库内容。
+**本地黑名单**：把你自己的真实字面量写进 `scripts/sensitive.local.txt`（每行一个）。
+行首加 `!` 表示 `block`，不加表示 `warn`。该文件已被 `.gitignore` 排除，**不会提交**，但门禁会用它扫描仓库内容。
 
 **误报处理**：只豁免明显是合成示例的值（`127.0.0.1`、`1.2.3.4`、`flag{test}`、`a1x2y3z4-8f2a`、
-`users.noreply.github.com` 等），真实值一律不豁免。代码里的 f-string 占位符（`NULL{cond}`、`task_{status}`）
+`users.noreply.github.com` 等），真实凭据一律不豁免。代码里的 f-string 占位符（`NULL{cond}`、`task_{status}`）
 与包名/URL 已做误报防护，见 `tests/test_check_sensitive.py`。
 
 运行期数据（`*.db`、`*.jsonl`、`runs.json`、`costs.json`、`preset-muteki.generated.yml`）已在 `.gitignore` 中。
