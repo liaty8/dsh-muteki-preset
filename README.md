@@ -33,6 +33,51 @@
 
 ---
 
+## 用来打 CTF
+
+这个预设不是通用聊天增强，它是按「一场 CTF 怎么打」设计的：主控只负责读题、拆任务、调度与复核，真正的分析/利用交给一个又一个**全新上下文**的子代理，所有结论都落在黑板上。
+
+| 题型 | 怎么用 |
+|---|---|
+| **Web**（SQLi / XSS / SSRF / 文件上传 / 反序列化） | 拆「入口探测 → 认证绕过 → 注入验证 → 利用链」等 Step，子代理各自 curl/发包验证；fact 必须带真实响应 artifact，猜的不许升级成结论 |
+| **Pwn**（栈 / 堆 / 格式化字符串） | 先派 recon 子代理跑 checksec/strings/IDA 导出，再派 exp 子代理写 pwntools；offset 与 leak 分开记，失败方向记 deadend |
+| **Reverse** | 多子代理并行静态分析 / 动态调试 / 算法还原；每步结论带反汇编或运行输出 artifact |
+| **Crypto / Misc / 取证** | 大附件拆成多个有界 Step（文件识别 → 解包 → 提取 → 验证），避免单会话被大文件拖爆上下文 |
+| **AWDP / 授权渗透** | 用 lane 锁串行化共享容器（只读优先、写操作持锁），`muteki_run` 的 `limit` 设为 1 |
+
+### 一场比赛的典型流程
+
+1. **读题**：你贴题面 / 附件 / 靶机，主控先 `board.py use web-8080` 切到这道题；
+2. **拆任务**：把题拆成至少 2 条有界 Step，每条写清「预期证据」和「停止边界」，进 `task` 队列；
+3. **自动派单**：`muteki_run limit 2 max_minutes 15`，子代理各自新上下文，只拿到本题黑板摘要；
+4. **写回**：子代理用 `fact --artifact` / `deadend` / `flag` 写回，不必等整批跑完；
+5. **复核**：`muteki_review` 起只读 Reviewer，质疑无证据结论、找验证缺口；
+6. **交 flag**：你手动复制到平台提交（刻意保留的人工确认）。
+
+### 三个可直接抄的提示
+
+```text
+# Web
+目标 http://1.2.3.4:8080，flag{wctf{...}}。先 board.py use web-8080，
+把它拆成入口探测 / 认证绕过 / 注入验证三条有界 Step，再 muteki_run limit 2 max_minutes 15。
+
+# Pwn
+附件 pwn1，远程 nc 1.2.3.4 9999。先派 recon（checksec/strings/IDA），
+再派 exp 写 pwntools 脚本；offset 和 leak 分开记 fact，失败方向记 deadend。
+
+# 大杂项
+附件 2GB 镜像。先拆「文件识别 / 挂载 / 找关键文件」三步，单步 10 分钟上限，
+超时就把范围记 deadend，不要反复重扫。
+```
+
+### 不适合
+
+- 需要人机验证 / 真人交互的题（验证码、支付、短信登录）；
+- 不可信的恶意 challenge：本预设**不做沙箱隔离**，Worker 会真实执行命令、访问目标；
+- 多 flag 平台的自动提交：没有平台提交闭环，flag 仍需人工确认。
+
+---
+
 ## 解决什么问题
 
 长会话里让一个 agent 从头打到尾，几乎一定会遇到四个坑：
@@ -244,15 +289,30 @@ dsh-muteki-preset/
 │  └─ preset-muteki.patch.yml      # 预设定义（含占位符）
 ├─ plugins/
 │  ├─ dsh-muteki-orchestrator/     # 派单 / 自动循环 / 记账 / 额度
+│  │  ├─ README.md                 # 插件独立安装说明
 │  │  ├─ package.json
 │  │  └─ plugin-v13.mjs
 │  └─ muteki-core/                 # 证据捕获（tools/result → artifacts）
+│     ├─ README.md                 # 插件独立安装说明
 │     └─ muteki-core.mjs
 ├─ board/
 │  ├─ board.py                     # 黑板（SQLite，标准库）
 │  └─ SKILL.md                     # 给 agent 用的黑板操作手册
 └─ assets/icon.png
 ```
+
+---
+
+## 插件独立使用
+
+两个插件都不依赖 Muteki 预设的 persona，可以单独挂到其他预设或 profile 全局：
+
+| 插件 | 单独用能做什么 | 依赖 |
+|---|---|---|
+| `muteki-core` | 任意会话里捕获工具结果、生成证据 id，配合 board.py 做证据门 | 无（只要 DSH） |
+| `muteki-orchestrator` | 任意预设里获得 `muteki_dispatch/tick/run/review/cli` 五个工具 | board.py（任务队列与 flag 检查） |
+
+挂载时注意两条硬约束：**必须放在 preset 的 `plugins` 内**（agent scope，否则 `UNAUTHORIZED`），**用包名 `@local/...` 引用**（不要相对路径）。各插件的详细安装步骤见它们目录下的 `README.md`。
 
 ---
 
