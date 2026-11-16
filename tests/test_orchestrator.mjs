@@ -541,3 +541,128 @@ test("stagnation: 出现 flag 时首解优先，不误判停滞", { skip: SKIP_R
     },
   );
 });
+
+// ── 成本口径与 DSH worker 花费记账（v1.9.0）───────────────────────────────
+
+const costsOf = (h) => readJson(h.ledger("costs.json"), []) || [];
+
+test("cost: DSH worker 结束后按墙钟估算入账，并归到正确的题", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    { config: { workerUsdPerMinute: 6 }, workerDelayMs: 120 },
+    async (h) => {
+      h.board(["use", "t-cost"]);
+      await h.call("muteki_dispatch", { prompt: "花点时间的一步" });
+      await h.activations[0].result;
+      const rows = costsOf(h).filter((x) => x.engine === "dsh-subagent");
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].challenge, "t-cost");
+      assert.equal(rows[0].basis, "estimate-time");
+      assert.ok(rows[0].usdEstimate > 0, "应当估出正数成本");
+      assert.ok(rows[0].ms >= 100, `应当记录墙钟耗时，实际 ${rows[0].ms}`);
+      assert.ok(Math.abs(rows[0].usdActual - rows[0].usdEstimate * 0.1) < 1e-6);
+      const totals = readJson(h.ledger("totals.json"), {});
+      assert.ok(totals["t-cost"].usdEstimate > 0);
+    },
+  );
+});
+
+test("cost: estimateToActual 可配，actual 跟着换算", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    { config: { workerUsdPerMinute: 60, estimateToActual: 0.2 }, workerDelayMs: 80 },
+    async (h) => {
+      await h.call("muteki_dispatch", { prompt: "一步" });
+      await h.activations[0].result;
+      const row = costsOf(h).find((x) => x.engine === "dsh-subagent");
+      assert.ok(row.usdEstimate > 0);
+      assert.ok(Math.abs(row.usdActual - row.usdEstimate * 0.2) < 1e-6);
+    },
+  );
+});
+
+test("cost: workerUsdPerMinute=0 时不估 worker 成本", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: { workerUsdPerMinute: 0 }, workerDelayMs: 60 }, async (h) => {
+    await h.call("muteki_dispatch", { prompt: "一步" });
+    await h.activations[0].result;
+    assert.equal(costsOf(h).filter((x) => x.engine === "dsh-subagent").length, 0);
+  });
+});
+
+test("cost: 事件带 costUsd 时记 actual，带 usage 时保留 tokens", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: {}, endInfo: { costUsd: 0.5 } }, async (h) => {
+    await h.call("muteki_dispatch", { prompt: "一步" });
+    await h.activations[0].result;
+    const row = costsOf(h).find((x) => x.engine === "dsh-subagent");
+    assert.equal(row.basis, "actual");
+    assert.equal(row.usdEstimate, 0.5);
+  });
+  await withHarness(
+    { config: {}, endInfo: { usage: { inputTokens: 1000, outputTokens: 200 } }, workerDelayMs: 60 },
+    async (h) => {
+      await h.call("muteki_dispatch", { prompt: "一步" });
+      await h.activations[0].result;
+      const row = costsOf(h).find((x) => x.engine === "dsh-subagent");
+      assert.equal(row.basis, "estimate-time");
+      assert.deepEqual(row.tokens, { input: 1000, output: 200 });
+    },
+  );
+});
+
+test("cost: 归因不了的 end 事件不入账（宁可少记，不算到别的题头上）", { skip: SKIP_REASON }, async () => {
+  await withHarness({}, async (h) => {
+    h.emit("subagent/end", { id: "unknown-child", stopReason: "completed" });
+    assert.equal(costsOf(h).length, 0);
+  });
+});
+
+test("cost: costBasis=actual 时闸门按真实口径判定", { skip: SKIP_REASON }, async () => {
+  const entry = { ts: Date.now(), usd: 10, usdEstimate: 10, usdActual: 1, engine: "claude-cli", challenge: "default" };
+  await withHarness({ config: { costBasis: "actual", maxCostUsdPerHour: 2 } }, async (h) => {
+    writeJson(h.ledger("costs.json"), [entry]);
+    await h.call("muteki_dispatch", { prompt: "真实口径还没超" });
+    assert.equal(h.activations.length, 1);
+  });
+  await withHarness({ config: { costBasis: "estimate", maxCostUsdPerHour: 2 } }, async (h) => {
+    writeJson(h.ledger("costs.json"), [entry]);
+    await assert.rejects(() => h.call("muteki_dispatch", { prompt: "估算口径已超" }), /每小时成本/);
+  });
+});
+
+test("cost: 老账本只有 usd 字段也能读，actual 口径按系数换算", { skip: SKIP_REASON }, async () => {
+  const legacy = [{ ts: Date.now(), usd: 5, engine: "claude-cli", challenge: "default" }];
+  await withHarness({ config: { maxCostUsdPerHour: 3 } }, async (h) => {
+    writeJson(h.ledger("costs.json"), legacy);
+    await assert.rejects(() => h.call("muteki_dispatch", { prompt: "一步" }), /每小时成本/);
+  });
+  await withHarness(
+    { config: { costBasis: "actual", estimateToActual: 0.1, maxCostUsdPerHour: 1 } },
+    async (h) => {
+      writeJson(h.ledger("costs.json"), legacy);
+      await h.call("muteki_dispatch", { prompt: "换算后 0.5 < 1，可派" });
+      assert.equal(h.activations.length, 1);
+    },
+  );
+});
+
+test("cost: worker 花费计入整题成本总闸", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { workerUsdPerMinute: 6000, maxCostUsdPerChallenge: 0.01, burstRuns: 100, maxRunsPerHour: 100 },
+      workerDelayMs: 100,
+    },
+    async (h) => {
+      await h.call("muteki_dispatch", { prompt: "第一步" });
+      await h.activations[0].result;
+      await assert.rejects(
+        () => h.call("muteki_dispatch", { prompt: "第二步" }),
+        /整题累计成本/,
+      );
+    },
+  );
+});
+
+test("cost: run 的 quota 明细带 costBasis", { skip: SKIP_REASON }, async () => {
+  await withHarness({ config: { costBasis: "actual" } }, async (h) => {
+    const out = await h.call("muteki_run", { challenge: "t-basis", limit: 1 });
+    assert.equal(out.quota.costBasis, "actual");
+  });
+});

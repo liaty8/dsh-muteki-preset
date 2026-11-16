@@ -93,6 +93,17 @@ export const Config = z.object({
     .step(1)
     .min(0)
     .comment("连续多少轮没有新增带证据 fact / flag 就停并写复核意见；0=关闭。省略按 mode（attended 5 / unattended 3）"),
+  workerUsdPerMinute: z
+    .number()
+    .min(0)
+    .comment("DSH 子代理每分钟估算成本（Anthropic 标价口径），默认 0.1；0=不估 worker 成本。subagent/end 不带 usage，只能按墙钟估"),
+  estimateToActual: z
+    .number()
+    .comment("估算口径 → 真实账单口径的换算系数，默认 0.1（接 DeepSeek 后端时约 1/10）"),
+  costBasis: z
+    .union([z.const("estimate"), z.const("actual")])
+    .default("estimate")
+    .comment("成本闸门用哪个口径：estimate=Anthropic 标价估算（默认）；actual=估算×estimateToActual（此时应把上限调低约 10 倍）"),
   maxCostUsdPerHour: z
     .number()
     .comment("每题每小时成本上限（美元，估算口径）；省略则用 mode 预设（attended 15 / unattended 5）"),
@@ -154,7 +165,13 @@ export function apply(ctx, config) {
     consumeToken(challenge);
   };
 
-  // ── 成本记账（CLI 引擎按 Claude Code 上报的 total_cost_usd 累计）──────────
+  // ── 成本记账（两种口径并存，闸门按 costBasis 选一种）─────────────────────
+  // usdEstimate：Anthropic 标价口径的估算。CLI 上报的 total_cost_usd 就是这个口径；
+  //              DSH 0.2.2-rc.3 的 subagent/end 只带 runInfo + stopReason + lastAssistantMessage，
+  //              **没有 token usage**（已核对 dsh-subagent / dsh-llm 的类型定义），
+  //              所以 worker 只能按墙钟时间 × workerUsdPerMinute 估，并如实标 basis。
+  // usdActual：  估算 × estimateToActual（接 DeepSeek 后端约 0.1），用来表达真实账单口径。
+  // 老账本只有 usd 字段 → 回落读 usd 并按当前口径换算，不丢历史。
   const costsFile = join(config.storageDir, "costs.json");
   const readCosts = () => {
     try {
@@ -169,19 +186,42 @@ export function apply(ctx, config) {
   };
   const recentCosts = (challenge) =>
     readCosts().filter((x) => Date.now() - x.ts < HOUR && x.challenge === (challenge ?? ""));
+  const estimateToActual = () => {
+    const value = Number(config.estimateToActual);
+    return Number.isFinite(value) && value > 0 ? value : 0.1;
+  };
+  const costField = () => (config.costBasis === "actual" ? "usdActual" : "usdEstimate");
+  const entryUsd = (row) => {
+    const direct = Number(row?.[costField()]);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    const legacy = Number(row?.usd);
+    if (!Number.isFinite(legacy) || legacy <= 0) return 0;
+    return config.costBasis === "actual" ? legacy * estimateToActual() : legacy;
+  };
   const totalCost = (challenge) =>
-    recentCosts(challenge).reduce((sum, x) => sum + (Number(x.usd) || 0), 0);
-  const recordCost = (usd, engine, challenge) => {
-    const value = Number(usd) || 0;
-    if (value <= 0) return;
+    recentCosts(challenge).reduce((sum, x) => sum + entryUsd(x), 0);
+  const recordCost = (usdEstimate, engine, challenge, extra = {}) => {
+    const estimate = Number(usdEstimate) || 0;
+    if (estimate <= 0) return;
+    const actual = Number((estimate * estimateToActual()).toFixed(6));
     try {
       const all = readCosts().filter((x) => Date.now() - x.ts < 24 * HOUR);
-      all.push({ ts: Date.now(), usd: value, engine, challenge: challenge ?? "" });
+      all.push({
+        ts: Date.now(),
+        usd: estimate,
+        usdEstimate: estimate,
+        usdActual: actual,
+        basis: extra.basis || "estimate",
+        engine,
+        challenge: challenge ?? "",
+        ...(extra.ms ? { ms: extra.ms } : {}),
+        ...(extra.tokens ? { tokens: extra.tokens } : {}),
+      });
       writeFileSync(costsFile, JSON.stringify(all), "utf8");
     } catch {
       /* 记账失败不影响结果 */
     }
-    bumpTotals(challenge, { usd: value });
+    bumpTotals(challenge, { usdEstimate: estimate, usdActual: actual });
   };
 
   // ── 整题累计总闸（totals.json）──────────────────────────────────────────
@@ -199,16 +239,27 @@ export function apply(ctx, config) {
   };
   const totalsFor = (challenge) => {
     const row = readTotals()[challenge ?? ""] || {};
-    return { runs: Number(row.runs) || 0, usd: Number(row.usd) || 0 };
+    const legacy = Number(row.usd) || 0;
+    return {
+      runs: Number(row.runs) || 0,
+      usdEstimate: Number(row.usdEstimate ?? legacy) || 0,
+      usdActual: Number(row.usdActual ?? legacy * estimateToActual()) || 0,
+    };
   };
   const bumpTotals = (challenge, delta) => {
     try {
       const all = readTotals();
       const key = challenge ?? "";
       const cur = all[key] || {};
+      const legacy = Number(cur.usd) || 0;
+      const estimate = (Number(cur.usdEstimate ?? legacy) || 0) + (delta.usdEstimate || 0);
+      const actual =
+        (Number(cur.usdActual ?? legacy * estimateToActual()) || 0) + (delta.usdActual || 0);
       all[key] = {
         runs: (Number(cur.runs) || 0) + (delta.runs || 0),
-        usd: Number(((Number(cur.usd) || 0) + (delta.usd || 0)).toFixed(6)),
+        usd: Number(estimate.toFixed(6)),
+        usdEstimate: Number(estimate.toFixed(6)),
+        usdActual: Number(actual.toFixed(6)),
         since: cur.since || Date.now(),
         updated: Date.now(),
       };
@@ -278,6 +329,7 @@ export function apply(ctx, config) {
     const runsHour = recentRuns(challenge).length;
     const costHour = totalCost(challenge);
     const totals = totalsFor(challenge);
+    const costTotal = config.costBasis === "actual" ? totals.usdActual : totals.usdEstimate;
     const hits = [];
     if (bucket.tokens < 1) {
       hits.push({
@@ -293,8 +345,8 @@ export function apply(ctx, config) {
     if (totals.runs >= limits.runsPerChallenge) {
       hits.push({ limit: "runsPerChallenge", used: totals.runs, cap: limits.runsPerChallenge });
     }
-    if (totals.usd >= limits.costPerChallenge) {
-      hits.push({ limit: "costPerChallenge", used: Number(totals.usd.toFixed(4)), cap: limits.costPerChallenge });
+    if (costTotal >= limits.costPerChallenge) {
+      hits.push({ limit: "costPerChallenge", used: Number(costTotal.toFixed(4)), cap: limits.costPerChallenge });
     }
     return {
       ok: hits.length === 0,
@@ -304,12 +356,13 @@ export function apply(ctx, config) {
       runsHour,
       costHour,
       runsTotal: totals.runs,
-      costTotal: totals.usd,
+      costTotal,
     };
   };
 
   const quotaSummary = (state) => ({
     mode: state.limits.mode,
+    costBasis: config.costBasis === "actual" ? "actual" : "estimate",
     tokens: Number(state.bucket.tokens.toFixed(2)),
     burstRuns: state.bucket.capacity,
     runsPerHour: state.limits.runsPerHour,
@@ -352,6 +405,7 @@ export function apply(ctx, config) {
     additionalProperties: false,
     properties: {
       mode: { type: "string" },
+      costBasis: { type: "string" },
       tokens: { type: "number" },
       burstRuns: { type: "number" },
       runsPerHour: { type: "number" },
@@ -451,6 +505,63 @@ export function apply(ctx, config) {
     },
   };
 
+  // ── DSH 子代理花费记账 ──────────────────────────────────────────────────
+  // 以前账本只有 muteki_cli 的估算，主力用的 DSH worker 花多少一无所知。
+  // 已核对 DSH 0.2.2-rc.3：subagent/end 的 payload 是 runInfo + stopReason +
+  // lastAssistantMessage（ContentBlock[]），**不带 token usage**，所以只能按墙钟估，
+  // 并如实标 basis=estimate-time。若将来版本带上 usage / costUsd，这里会自动改用真实值。
+  const workerStarts = new Map();
+  const workerChallenge = new Map();
+  // 极短命的子代理可能在 startActivation 返回之前就 end（那时还没拿到 childId），
+  // 所以派单前先按 FIFO 挂一个待归属的题；start 事件到达时认领，noteWorker 再权威覆盖。
+  const pendingChallenges = [];
+  const notePending = (challenge) => {
+    if (!challenge) return;
+    // 派单失败时不会有 start 事件来认领，队列要有界，避免陈旧条目越积越多。
+    while (pendingChallenges.length >= 16) pendingChallenges.shift();
+    pendingChallenges.push(challenge);
+  };
+  const noteWorker = (childId, challenge) => {
+    if (!childId) return;
+    workerStarts.set(childId, Date.now());
+    if (challenge) workerChallenge.set(childId, challenge);
+  };
+  const pickUsage = (info) => {
+    const usage = info?.usage ?? info?.tokenUsage ?? info?.tokens ?? null;
+    return {
+      costUsd: Number(info?.costUsd ?? info?.total_cost_usd ?? usage?.costUsd ?? 0) || 0,
+      inputTokens: Number(usage?.inputTokens ?? 0) || 0,
+      outputTokens: Number(usage?.outputTokens ?? 0) || 0,
+    };
+  };
+  const recordWorkerCost = (info) => {
+    const childId = info?.id;
+    if (!childId) return;
+    const challenge = workerChallenge.get(childId);
+    const began = workerStarts.get(childId);
+    workerStarts.delete(childId);
+    workerChallenge.delete(childId);
+    // 归因不了就不记：宁可少记，也不要把花费算到别的题头上。
+    if (!challenge || !began) return;
+    const ms = Math.max(0, Date.now() - began);
+    const usage = pickUsage(info);
+    if (usage.costUsd > 0) {
+      recordCost(usage.costUsd, "dsh-subagent", challenge, { basis: "actual", ms });
+      return;
+    }
+    const perMinute = Number(config.workerUsdPerMinute);
+    const rate = Number.isFinite(perMinute) && perMinute >= 0 ? perMinute : 0.1;
+    const tokens =
+      usage.inputTokens || usage.outputTokens
+        ? { input: usage.inputTokens, output: usage.outputTokens }
+        : undefined;
+    recordCost((ms / 60_000) * rate, "dsh-subagent", challenge, {
+      basis: "estimate-time",
+      ms,
+      ...(tokens ? { tokens } : {}),
+    });
+  };
+
   const logSubagent = (kind, info) => {
     try {
       appendFileSync(
@@ -462,8 +573,18 @@ export function apply(ctx, config) {
       /* 记账失败不应中断子代理 */
     }
   };
-  ctx.on("subagent/start", (info) => logSubagent("start", info));
-  ctx.on("subagent/end", (info) => logSubagent("end", info));
+  ctx.on("subagent/start", (info) => {
+    logSubagent("start", info);
+    if (!info?.id) return;
+    if (!workerStarts.has(info.id)) workerStarts.set(info.id, Date.now());
+    if (!workerChallenge.has(info.id) && pendingChallenges.length) {
+      workerChallenge.set(info.id, pendingChallenges.shift());
+    }
+  });
+  ctx.on("subagent/end", (info) => {
+    logSubagent("end", info);
+    recordWorkerCost(info);
+  });
 
   const runBoard = (argv, cwd) => {
     const run = spawnSync(config.python, [config.boardPy, ...argv], {
@@ -575,6 +696,7 @@ ${contextText}
   const dispatchTask = async (task, parent, exec, cwd, args, contextText, challenge) => {
     const claim = runBoard(["task", "claim", String(task.id), "--owner", parent.id], cwd);
     if (claim.status !== 0) return null;
+    notePending(challenge);
     const activation = await ctx.get("subagents").startActivation({
       provider: "spawn",
       label: `tick-t${task.id}`,
@@ -587,6 +709,7 @@ ${contextText}
         ? { agentOptions: agentOptionsFor(args) }
         : {}),
     });
+    noteWorker(activation.childId, challenge);
     recordRun(challenge);
     return activation;
   };
@@ -695,6 +818,7 @@ ${contextText}
         }
       }
 
+      notePending(challenge);
       const activation = await subagents.startActivation({
         provider: "spawn",
         label: args.name || "muteki-worker",
@@ -709,6 +833,7 @@ ${contextText}
           : {}),
       });
 
+      noteWorker(activation.childId, challenge);
       recordRun(challenge);
       return { kind: "activation", childId: activation.childId, name: activation.name };
     },
@@ -1340,7 +1465,10 @@ ${focus}
       const costUsd = Number(parsed?.total_cost_usd ?? parsed?.cost_usd ?? 0) || 0;
       const timedOut = Boolean(run.error && (run.error.killed || run.error.code === "ETIMEDOUT"));
       const stopped = timedOut ? "timeout" : run.status === 0 ? "completed" : "error";
-      recordCost(costUsd, "claude-cli", challenge);
+      recordCost(costUsd, "claude-cli", challenge, {
+        basis: "estimate-anthropic",
+        ms: Date.now() - startedAt,
+      });
       recordRun(challenge);
       try {
         mkdirSync(config.storageDir, { recursive: true });

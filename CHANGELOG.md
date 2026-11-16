@@ -8,6 +8,70 @@
 
 ---
 
+## [1.9.0] - 2026-11-16
+
+额度机制改造第 4 步（收尾）：**成本账本只记了一半，口径也没标**。新能力，升 minor。
+
+### 问题
+
+- `recordCost` 只在 `muteki_cli` 里调用，**主力用的 DSH 子代理花多少完全没进账本**——
+  所谓「成本上限」其实只拦得住 CLI 那一小部分。
+- 账本里的美元是 Claude Code 按 **Anthropic 标价**的估算，接 DeepSeek 后端实际低一个数量级，
+  但条目上没有任何口径标注，看账的人无法判断这是估算还是账单。
+
+### 核对过的事实（不是猜的）
+
+DSH 0.2.2-rc.3 的 `subagent/end` payload = `runInfo`（`runId` / `provider` / `parentSessionId` / `id` / `local`）
++ `stopReason` + `lastAssistantMessage`（`ContentBlock[]`）。查过 `dsh-subagent` 与 `dsh-llm` 的类型定义：
+**不带 token usage**，`ContentBlock` 的七种类型（text / reasoning / image / file / tool-call / tool-addition / tool-removal）里也没有 usage 字段。
+所以 worker 成本**只能按墙钟时间估**，并如实标 `basis`；将来版本带上 usage / costUsd 时会自动改用真实值。
+
+### Added
+
+- **DSH 子代理花费记账**：`subagent/start` 记起始时刻，`subagent/end` 结算
+  `墙钟分钟 × workerUsdPerMinute`（默认 **0.1**，Anthropic 标价口径），`basis: estimate-time`，engine `dsh-subagent`。
+  `workerUsdPerMinute: 0` 可关闭。
+- **两种口径并存**：每条成本同时存 `usdEstimate` 与 `usdActual`（= 估算 × `estimateToActual`，默认 **0.1**）；
+  `usd` 字段保留同值兼容老账本。新增 **`costBasis`**（`estimate` 默认 / `actual`）决定闸门比哪一个。
+- **basis 标注**：`estimate-anthropic`（CLI 上报值）、`estimate-time`（worker 墙钟估）、`actual`（事件直接给 costUsd）。
+  事件若带 `usage.inputTokens/outputTokens`，一并记进 `tokens` 字段，供将来按 token 计价。
+- **归因机制**：`subagent/end` 只带 childId、不带题名，所以派单前按 FIFO 挂待归属题，
+  `start` 事件认领、拿到 childId 后权威覆盖；**归因不了就不记账**（宁可少记，不算到别的题头上）。
+  待归属队列有界（16），派单失败不会留下无限增长的陈旧条目。
+- `muteki_run` 的 `quota` 明细补 `costBasis`。
+- 插件测试 +9（32 → **41**）：worker 入账与题名归因、墙钟耗时记录、`estimateToActual` 换算、
+  `workerUsdPerMinute=0` 不估、事件带 `costUsd` → `actual`、带 usage → 保留 tokens、
+  归因不了不入账、`costBasis` 两种口径分别判定、**老账本只有 `usd` 也能读且 actual 口径按系数换算**、
+  worker 花费计入整题成本总闸、run 输出带 costBasis。
+- 测试脚手架补 `emit()` 与生命周期模拟：mock subagents 现在会发 `subagent/start` / `subagent/end`，
+  `endInfo` 可注入 usage 字段测「未来版本带 usage」的分支。
+
+### Fixed
+
+- **极短命子代理的归因竞态**：`end` 可能比 `startActivation` 返回更早到（那时还没拿到 childId），
+  导致成本被丢弃。改为派单前先挂 FIFO 待归属题，`start` 事件即可认领。
+  这个缺陷是测试脚手架模拟「零耗时 worker」时抓出来的，真实 DSH 里 worker 至少跑几秒，但失败即退的场景同样会踩。
+
+### Migration
+
+- 无黑板 schema 变更。老 `costs.json` / `totals.json`（只有 `usd`）继续可读：
+  estimate 口径直接用，actual 口径按 `estimateToActual` 换算。
+- **默认行为变化**：worker 现在也计成本了，所以成本闸会比以前更早命中。
+  嫌紧就调高 `maxCostUsdPerHour` / `maxCostUsdPerChallenge`，或设 `workerUsdPerMinute: 0` 关掉 worker 估算。
+- 想按真实账单口径管钱：设 `costBasis: actual`，同时把上限调低约 10 倍（例如 $1.5/h、整题 $5）。
+- 插件覆盖后需重启 DSH。
+
+### 验证
+
+```bash
+DSH_NODE_MODULES=<profile>/node_modules node --test tests/test_orchestrator.mjs   # 41 pass
+python -m unittest discover -s tests                                             # Ran 125 tests ... OK
+```
+
+[1.9.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.9.0
+
+---
+
 ## [1.8.0] - 2026-11-16
 
 额度机制改造第 3 步：**硬题该被「没进展」拦，不该被「次数」拦**。新能力，升 minor。

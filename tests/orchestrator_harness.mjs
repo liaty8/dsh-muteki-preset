@@ -126,6 +126,17 @@ export async function createHarness(options = {}) {
   const events = [];
   const activations = [];
   const worker = options.worker || (async () => {});
+  /** 触发插件注册的生命周期监听器（模拟 DSH 的 emitLifecycle）。 */
+  const emit = (event, info) => {
+    for (const [name, fn] of events) {
+      if (name !== event) continue;
+      try {
+        fn(info);
+      } catch {
+        /* 监听器内部应当自己容错，这里再兜一层 */
+      }
+    }
+  };
 
   const subagents = {
     async startActivation(opts) {
@@ -134,6 +145,14 @@ export async function createHarness(options = {}) {
       const cwd = opts.cwd || ws;
       const record = { childId, name, opts, cwd, interrupted: false, error: null };
       activations.push(record);
+      const info = {
+        runId: childId,
+        id: childId,
+        provider: "spawn",
+        local: false,
+        parentSessionId: "parent-test",
+      };
+      emit("subagent/start", info);
       record.result = (async () => {
         if (options.workerDelayMs) {
           await new Promise((resolve) => setTimeout(resolve, options.workerDelayMs));
@@ -149,6 +168,9 @@ export async function createHarness(options = {}) {
         } catch (err) {
           record.error = String(err);
         }
+        // DSH 0.2.2-rc.3 的 subagent/end 只带 runInfo + stopReason + lastAssistantMessage，
+        // 没有 token usage；options.endInfo 可注入 usage 字段来测「未来版本带 usage」的分支。
+        emit("subagent/end", { ...info, stopReason: "completed", ...(options.endInfo || {}) });
         return { ok: true, childId };
       })();
       return record;
@@ -224,6 +246,7 @@ export async function createHarness(options = {}) {
     config,
     events,
     activations,
+    emit,
     board,
     call,
     exec,

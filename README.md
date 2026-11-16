@@ -248,7 +248,8 @@ board.py context --all     # 跨题审计
 - **停滞熔断才是硬题该撞的闸**：每轮结束比较「最新带证据 fact 的 id + flag 条数」，连续 `stagnationLimit` 轮没有前进就停（`stoppedReason: "stagnation"`），并写一条 `review --kind gap` 提示人工换思路。**observation 与 deadend 不算进展**——排除方向有价值，但连续几轮只在排除方向说明该换入口了，而不是继续烧额度重试。
 - 切到新题不继承旧题额度；切回旧题时额度继续累计。
 - 四个入口共用同一套判定（`quotaState`），不会口径分叉；`muteki_run` 返回 `quota` 明细、`limitHit`、`resumeAt`、`waitedMs`、`overridden`、`overrideNote`。
-- 美元是 **Claude Code 按 Anthropic 标价的估算**，接 DeepSeek 后端时实际账单低一个数量级（$15/h 估算 ≈ 实际 $1.5/h）。
+- **成本账本现在两种引擎都记**：`muteki_cli` 记 Claude Code 上报的 `total_cost_usd`（`basis: estimate-anthropic`）；DSH 子代理在 `subagent/end` 时按墙钟时间 × `workerUsdPerMinute` 估算（`basis: estimate-time`）。已核对 DSH 0.2.2-rc.3 的 `subagent/end` payload **不带 token usage**，所以只能估，并如实标注；将来版本带上 usage/costUsd 会自动改用真实值（`basis: actual`）。
+- 每条成本同时存 `usdEstimate`（Anthropic 标价口径）与 `usdActual`（× `estimateToActual`）。`costBasis` 决定闸门比哪一个，默认 `estimate`；接 DeepSeek 时 $15/h 估算 ≈ 实际 $1.5/h。
 - 整题总闸打满就用 `board.py task drop <id>` 放弃该题，或换题。
 
 ---
@@ -446,6 +447,9 @@ dsh-muteki-preset/
 | `onQuota` | 按 mode（wait / stop） | `muteki_run` 令牌不足时等回填还是立即停 |
 | `maxWaitMinutes` | 按 mode（10 / 0） | `onQuota=wait` 时单次最长等待分钟数 |
 | `stagnationLimit` | 按 mode（5 / 3） | 连续多少轮无新增带证据 fact/flag 就停并写复核意见；0=关闭 |
+| `workerUsdPerMinute` | `0.1` | DSH 子代理每分钟估算成本（Anthropic 标价口径）；0=不估 |
+| `estimateToActual` | `0.1` | 估算口径 → 真实账单口径的换算系数（接 DeepSeek 约 1/10） |
+| `costBasis` | `estimate` | 成本闸门用哪个口径：`estimate` / `actual`（选 actual 时上限应调低约 10 倍） |
 | `maxCostUsdPerHour` | 按 mode（$15 / $5） | 每题每小时成本上限（估算口径） |
 | `maxRunsPerChallenge` | 按 mode（300 / 100） | 整题累计派单总闸，不随小时重置 |
 | `maxCostUsdPerChallenge` | 按 mode（$50 / $15） | 整题累计成本总闸 |
@@ -524,7 +528,7 @@ DSH_NODE_MODULES=<你的 DSH home>/profiles/desktop/node_modules \
 - **运行期数据含敏感信息**：证据文件与黑板库会记录真实目标、cookie、token 与 flag。它们已被 `.gitignore` 排除；发布前务必跑 `python scripts/check_sensitive.py`（见上一节）。
 - **Reviewer 只读**：`muteki_review` 只读黑板、不碰目标。
 - **没有平台提交闭环**：flag 仍需要你手动复制到 CTF 平台；这是刻意留给人确认的一步。
-- **额度不是硬沙箱**：attended 默认 $15/h、整题 $50（unattended $5/h、整题 $15）都是**估算**上限（Claude Code 按 Anthropic 价估算，接 DeepSeek 后端时实际低一个数量级），不是账单保证；DSH 子代理的花费尚未计入账本。
+- **额度不是硬沙箱**：attended 默认 $15/h、整题 $50（unattended $5/h、整题 $15）都是**估算**上限，不是账单保证。CLI 按 Anthropic 标价估算，DSH 子代理按墙钟时间估算（`subagent/end` 不带 token usage），接 DeepSeek 后端时实际账单低一个数量级。
 - **Windows 优先**：脚本与路径以 Windows 为主，Linux/macOS 需把 `install.ps1` 的路径替换成对应 shell 写法。
 
 ---

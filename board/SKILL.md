@@ -90,7 +90,7 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 派单额度由 orchestrator 的 `mode` 决定预设（`attended` 桶容量 60、回填 40 次/小时、整题 300 次；`unattended` 桶容量 12、回填 12 次/小时、整题 100 次），显式配置的 `burstRuns` / `maxRunsPerHour` / `maxRunsPerChallenge` 优先，**按题独立**。令牌桶记在 `buckets.json`，整题累计记在 `totals.json`（不清理），每小时派单流水记在 `runs.json`（滚动窗口，供复盘）。子代理的启动/结束会记到 `{{STORAGE_DIR}}\subagents.jsonl`。
 
-成本上限按题独立：`muteki_cli` 每次调用会把 Claude Code 上报的 `total_cost_usd` 记进 `costs.json`（每小时滚动）与 `totals.json`（整题累计）。**本题**每小时超过 `maxCostUsdPerHour`（attended $15 / unattended $5），或整题累计超过 `maxCostUsdPerChallenge`（attended $50 / unattended $15），`muteki_cli` 与 `muteki_run` 都以 `budget` 停止派单。每小时上限等窗口滚动恢复，整题总闸只能换题或调高配置。注意这是 Claude Code 按 Anthropic 标价估算的金额，接 DeepSeek 时实际账单低一个数量级；DSH 子代理的花费目前还没进这本账。
+成本上限按题独立，两种引擎都记账：`muteki_cli` 记 Claude Code 上报的 `total_cost_usd`（`basis: estimate-anthropic`），DSH 子代理在结束时按墙钟时间 × `workerUsdPerMinute`（默认 0.1/分钟）估算（`basis: estimate-time`）——DSH 的 `subagent/end` 不带 token usage，所以只能估，账本里如实标了口径。每条成本同时存 `usdEstimate` 与 `usdActual`（× `estimateToActual`，默认 0.1），`costBasis` 决定闸门比哪个（默认 estimate）。**本题**每小时超过 `maxCostUsdPerHour`（attended $15 / unattended $5），或整题累计超过 `maxCostUsdPerChallenge`（attended $50 / unattended $15），`muteki_cli` 与 `muteki_run` 都以 `budget` 停止派单。每小时成本上限等窗口滚动恢复，整题总闸只能换题或调高配置。接 DeepSeek 时实际账单约为估算值的 1/10。
 
 ## 命令
 

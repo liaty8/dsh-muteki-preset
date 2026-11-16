@@ -48,6 +48,9 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 | `onQuota` | 按 mode | `muteki_run` 令牌不足时 `wait`（等回填）/ `stop`（立即停）；attended wait / unattended stop |
 | `maxWaitMinutes` | 按 mode | `onQuota=wait` 时单次最长等待分钟数；attended 10 / unattended 0 |
 | `stagnationLimit` | 按 mode | 连续多少轮无新增带证据 fact/flag 就停并写 review gap；attended 5 / unattended 3；**0=关闭** |
+| `workerUsdPerMinute` | `0.1` | DSH 子代理每分钟估算成本（Anthropic 标价口径）；**0=不估 worker 成本** |
+| `estimateToActual` | `0.1` | 估算口径 → 真实账单口径的换算系数（接 DeepSeek 约 1/10） |
+| `costBasis` | `estimate` | 成本闸门比哪个口径：`estimate`（默认）/ `actual`（选 actual 时上限应调低约 10 倍） |
 | `maxCostUsdPerHour` | 按 mode | **每题**每小时成本上限（美元，估算口径）；attended 15 / unattended 5 |
 | `maxRunsPerChallenge` | 按 mode | **整题累计**派单总闸，不随小时重置；attended 300 / unattended 100 |
 | `maxCostUsdPerChallenge` | 按 mode | **整题累计**成本总闸（美元）；attended 50 / unattended 15 |
@@ -82,7 +85,29 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 
 `muteki_run` 的返回值带 `quota` 明细（mode、四个 used/cap、`limitHit`），`stoppedReason: "budget"` 时能直接看出命中的是哪一条。
 
-成本口径提醒：`costs.json` 里的美元来自 Claude Code 按 **Anthropic 标价**的估算，接 DeepSeek 后端时实际账单低一个数量级；DSH 子代理的花费目前尚未计入（见路线图）。
+## 成本口径
+
+账本里每条成本都带 `basis`，两种引擎都记：
+
+| 来源 | basis | 怎么算 |
+|---|---|---|
+| `muteki_cli` | `estimate-anthropic` | Claude Code 上报的 `total_cost_usd`（按 Anthropic 标价估算） |
+| DSH 子代理 | `estimate-time` | 墙钟分钟数 × `workerUsdPerMinute`（默认 0.1） |
+| DSH 子代理（将来带 usage 时） | `actual` | 事件里直接给出 `costUsd` / `total_cost_usd` 时采用真实值 |
+
+**为什么 worker 只能按时间估**：已核对 DSH 0.2.2-rc.3 的类型定义——`subagent/end` 的 payload 是
+`runInfo`（runId / provider / parentSessionId / id / local）+ `stopReason` + `lastAssistantMessage`（`ContentBlock[]`），
+**不带 token usage**；`ContentBlock` 的七种类型里也没有 usage 字段。所以拿不到真实 token，只能估，并如实标注。
+若事件里出现 `usage.inputTokens/outputTokens`，会一并记进 `tokens` 字段供将来按 token 计价；出现 `costUsd` 则直接改用 `actual`。
+
+每条成本同时存两个口径：
+
+- `usdEstimate`：Anthropic 标价口径（`usd` 字段保留同值，兼容老账本）；
+- `usdActual`：`usdEstimate × estimateToActual`（默认 0.1，接 DeepSeek 时约 1/10）。
+
+`costBasis` 决定**闸门比哪一个**，默认 `estimate`。老账本只有 `usd` 字段也能读：estimate 口径直接用，actual 口径按系数换算。
+
+归因原则：`subagent/end` 只带 childId、不带题名，所以派单时先按 FIFO 挂一个待归属的题，`start` 事件认领、拿到 childId 后权威覆盖；**归因不了就不记账**——宁可少记，也不把花费算到别的题头上。
 
 ## 停滞熔断
 
