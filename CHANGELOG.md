@@ -8,7 +8,11 @@
 
 ---
 
-## [1.0.14] - 2026-11-16
+## [1.0.15] - 2026-11-16
+
+> **版本号说明**：`v1.0.14` 已被先前的「安装修复 + 默认路径脱敏」release 占用（tag 指向 `9eb7a4a`），
+> 因此本条目顺延为 `1.0.15`，不覆盖既有 tag。另：`v1.0.13`（A1 事件修复）发布时间晚于既有的
+> `v1.0.14`，号序与时间序不一致属历史遗留；自 `1.0.15` 起恢复正常递增。
 
 对应路线图条目 **S1：发布前敏感信息门禁 + 仓库脱敏**（用户最高优先要求：公开仓库不得暴露任何真实作战数据）。
 
@@ -38,7 +42,7 @@
 - `plugins/muteki-core/README.md` 的证据 id 示例改为合成值 `a1x2y3z4-8f2a`，替换掉一个真实格式的历史 id。
 - `README.md` 的 flag 示例改为 `flag{...}`，去掉真实赛事前缀；python 路径示例改为 `<Python 安装目录>\python.exe`，
   去掉盘符绝对路径。
-- `board.py` 与 orchestrator `package.json` 版本号同步到 `1.0.14`。
+- `board.py` 与 orchestrator `package.json` 版本号同步到 `1.0.15`。
 
 ### Migration
 
@@ -51,7 +55,7 @@
 ```bash
 python -m unittest discover -s tests -v   # Ran 36 tests ... OK
 python scripts/check_sensitive.py         # 干净：未发现敏感信息（rc=0）
-python board/board.py --version           # muteki-board 1.0.14
+python board/board.py --version           # muteki-board 1.0.15
 ```
 
 ### 发布流程（从此每个 release 必做）
@@ -59,7 +63,7 @@ python board/board.py --version           # muteki-board 1.0.14
 1. 改代码 → 2. 跑 unittest → 3. 跑 `check_sensitive.py`（含 `--staged`）→ 4. commit →
 5. tag → 6. push → 7. 建 GitHub Release（release 正文同样不得含本机路径与真实作战数据）。
 
-[1.0.14]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.0.14
+[1.0.15]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.0.15
 
 ---
 
