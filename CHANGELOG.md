@@ -8,6 +8,62 @@
 
 ---
 
+## [1.1.0] - 2026-11-16
+
+对应路线图条目 **A4：flag 没有证据字段、没有验证状态**。这是 schema 变更 + 新能力，按语义化版本升 minor。
+
+### 背景
+
+`flags` 表此前只有 `value / source`，`flag` 命令不支持 `--artifact`——
+flag 是最终交付物，却是全黑板唯一不需要证据的条目，与「结论必须带证据」的铁律自相矛盾。
+真实作战中 Reviewer 已两次指出该缺口（flag 未绑定证据 id 无法核对；flag 与公开 writeup 同值需写明判定链）。
+
+### Added
+
+- **`flags` 表新增四列**：`artifacts`（证据 id 列表，JSON）、`status`（验证状态）、
+  `verified_by`（判定依据）、`note`（判定链 / 备注）。
+- **`flag --artifact <id>`**：走与 fact / deadend 同一道证据门，id 不存在直接 exit 2 拒写。
+  仍可重复传参绑定多条证据。
+- **`flag --status <状态>`**：记录时即可指定初始状态（默认 `candidate`）。
+- **`flag --note`**：写判定链，例如「与公开 writeup 同值，但已由目标回连实时取证」。
+- **新命令 `flagstatus <id> --set <状态> [--verified-by ...] [--note ...]`**：
+  状态机 `candidate → submitted → accepted / rejected`；跨题操作被拒（rc=1）；
+  非法状态 rc=2；每次变更写 `flag_status` 事件（含 from/to）。
+- `context` 的 flag 段现在显示 `[状态]`、证据 id、判定依据与备注；未绑定证据时明确提示。
+- `read g<id>` 输出新字段；`context --json` 的 flags 行自动包含新列。
+- `tests/test_board.py` 新增 `TestFlagEvidenceAndStatus`（13 个用例）：
+  绑定证据、坏证据拒写、无证据仍兼容、初始状态、状态机流转与事件、rejected 备注、
+  不存在 id、非法状态、按题隔离、context 展示、read 新字段，
+  以及**两种旧库迁移**（有 challenge 列补四列 / 无 challenge 列重建后补列）。
+
+### Changed
+
+- `board/SKILL.md`：flag 定义补证据与状态；证据门说明纳入 flag；命令示例补 `--artifact` 与 `flagstatus`；
+  「什么时候写」补状态机与判定链要求。
+- `board.py` 文档字符串补 `flag --artifact` 与 `flagstatus` 用法。
+- 版本号同步到 `1.1.0`。
+
+### Migration
+
+- **自动迁移，无需手工操作**：`_migrate()` 检测 `flags` 缺列时 `ALTER TABLE ADD COLUMN`；
+  极旧库（无 `challenge` 列）先按原逻辑重建再补列。已有 flag 一律落为 `status='candidate'`、`artifacts='[]'`。
+- **向后兼容**：`flag "<值>" --source "..."` 的旧用法完全不变（证据为可选），
+  orchestrator 的 workerPrompt 与既有会话无需改动即可继续工作。
+- 迁移前建议备份 `board.db`（与以往一致）。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests -v   # Ran 64 tests ... OK
+python board/board.py flag "flag{test}" --artifact <真实id>
+python board/board.py flagstatus 1 --set accepted --verified-by "平台回显 correct"
+python board/board.py --version           # muteki-board 1.1.0
+```
+
+[1.1.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.1.0
+
+---
+
 ## [1.0.17] - 2026-11-16
 
 对应路线图条目 **S2：门禁分级（block / warn）**。按用户策略：只有「他人可利用 / 个人信息 / 涉及金钱」才阻断发布，

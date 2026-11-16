@@ -11,7 +11,7 @@ whenToUse: 开始一个需要多步探测的 CTF/攻防任务前；派子代理�
 - **fact** —— 被真实工具输出支持、可被后续步骤直接引用的结论（必须挂 `--artifact`）；
 - **observation** —— 还没被工具证实的推测/观察（`fact` 不带 `--artifact` 时自动落这里，禁止当结论传给下一步）；
 - **deadend** —— 被实测排除的方向（测了什么、实际看到什么）；
-- **flag** —— 从真实回显里拿到的候选 flag。
+- **flag** —— 从真实回显里拿到的 flag，带证据 id 与验证状态（candidate / submitted / accepted / rejected）。
 
 推算、经验、猜测**不进事实区**。这是这套流程唯一真正重要的纪律：假事实一旦被下一个 worker 当成已知条件，整条链会连锁跑偏。
 
@@ -19,7 +19,7 @@ whenToUse: 开始一个需要多步探测的 CTF/攻防任务前；派子代理�
 
 ## 证据门（muteki-core 插件）
 
-DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工具名 + 参数 + 输出」落盘成证据，并给一个 id（形如 `a1x2y3z4-8f2a`）。`fact` / `deadend` 用 `--artifact <id>` 引用它：
+DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工具名 + 参数 + 输出」落盘成证据，并给一个 id（形如 `a1x2y3z4-8f2a`）。`fact` / `deadend` 用 `--artifact <id>` 引用它（`flag` 也支持，可选但强烈建议）：
 
 - id 不存在或对应文件丢了 → board.py 直接拒写（退出码 2）；
 - 不带 `--artifact` → 记为 observation，`context` 会把它单独列在「未证实观察」，提醒不要当结论；
@@ -131,8 +131,13 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 # 记死路：被测方向 + 范围 + 实际观察（三者缺一不可）
 {{PYTHON}} {{BOARD}} deadend "为什么排除" --tested "测了什么、什么范围" --observed "实际看到什么" --artifact aXXXX
 
-# 拿到候选 flag 立刻记，保留原始值
-{{PYTHON}} {{BOARD}} flag "flag{...}" --source "从哪个响应/文件来的"
+# 拿到 flag 立刻记，保留原始值，并绑定真实回显的证据 id
+{{PYTHON}} {{BOARD}} flag "flag{...}" --source "从哪个响应/文件来的" --artifact aXXXX
+
+# flag 验证状态机：candidate（候选）→ submitted（已提交）→ accepted / rejected（平台判定）
+{{PYTHON}} {{BOARD}} flagstatus 1 --set submitted
+{{PYTHON}} {{BOARD}} flagstatus 1 --set accepted --verified-by "平台回显 correct"
+{{PYTHON}} {{BOARD}} flagstatus 1 --set rejected --note "平台判错，回到证据复核"
 
 # 检索 / 细读 / 统计
 {{PYTHON}} {{BOARD}} search "关键词"
@@ -151,7 +156,8 @@ id 前缀：`f`=fact/observation、`d`=deadend、`g`=flag、`t`=task、`r`=revie
 - 只成功过一次的路径，不要写成默认入口。
 - 有限实验排除了一个明确假设 → `deadend --artifact`，写清测试范围与实际观察；「没跑通」不是死路，「测了 X 得到 Y」才是。
 - 超时、取消、没跑完 → 不写 fact、不写 deadend，如实说明这一步没有结论。
-- 提交 flag 前优先确认它来自真实回显；平台判错时回到黑板记录里找原始输出复核。
+- 提交 flag 前优先确认它来自真实回显，并用 `--artifact` 把那次回显绑上；`flag` 不带证据仍能记录（向后兼容），但会提示「未绑定证据」，且无法与证据库核对。
+- flag 有状态：`candidate`（候选）→ `submitted`（已提交平台）→ `accepted` / `rejected`（平台判定）。用 `flagstatus <id> --set <状态>` 推进，`--verified-by` 写判定依据、`--note` 写判定链（例如「与公开 writeup 同值，但已由目标回连实时取证」）。平台判错时标 `rejected`，回到黑板记录里找原始输出复核，不要直接删条目。
 
 ## 与子代理配合
 

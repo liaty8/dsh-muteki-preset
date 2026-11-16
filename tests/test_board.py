@@ -260,5 +260,120 @@ class TestReadAndSearch(BoardCase):
         self.assertIn("乙题任务", proc_all.stdout)
 
 
+class TestFlagEvidenceAndStatus(BoardCase):
+    """A4：flag 绑定证据 + 验证状态机 + 旧库迁移。"""
+
+    def test_flag_with_artifact_is_stored(self) -> None:
+        aid = self.make_artifact(content="flag{test} in response")
+        self.board("flag", "flag{test}", "--source", "响应", "--artifact", aid)
+        row = self.query("SELECT artifacts, status FROM flags WHERE id=1")[0]
+        self.assertIn(aid, row[0])
+        self.assertEqual(row[1], "candidate")
+
+    def test_flag_with_bad_artifact_rejected(self) -> None:
+        self.board("flag", "flag{test}", "--artifact", "anothere-000000", expect=2)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM flags")[0][0], 0)
+
+    def test_flag_without_artifact_still_works(self) -> None:
+        proc = self.board("flag", "flag{test}", "--source", "响应")
+        self.assertIn("未绑定证据", proc.stdout)
+        self.assertEqual(self.query("SELECT status FROM flags WHERE id=1")[0][0], "candidate")
+
+    def test_flag_initial_status_can_be_set(self) -> None:
+        self.board("flag", "flag{test}", "--status", "submitted")
+        self.assertEqual(self.query("SELECT status FROM flags WHERE id=1")[0][0], "submitted")
+
+    def test_flagstatus_transitions_and_event(self) -> None:
+        self.board("flag", "flag{test}")
+        self.board("flagstatus", "1", "--set", "submitted")
+        self.board("flagstatus", "1", "--set", "accepted", "--verified-by", "平台回显 correct")
+        row = self.query("SELECT status, verified_by FROM flags WHERE id=1")[0]
+        self.assertEqual(row[0], "accepted")
+        self.assertEqual(row[1], "平台回显 correct")
+        self.assertEqual(
+            self.query("SELECT COUNT(*) FROM events WHERE kind='flag_status'")[0][0], 2
+        )
+
+    def test_flagstatus_rejected_keeps_note(self) -> None:
+        self.board("flag", "flag{test}")
+        self.board("flagstatus", "1", "--set", "rejected", "--note", "平台判错")
+        row = self.query("SELECT status, note FROM flags WHERE id=1")[0]
+        self.assertEqual(row[0], "rejected")
+        self.assertEqual(row[1], "平台判错")
+
+    def test_flagstatus_missing_id_returns_1(self) -> None:
+        self.board("flagstatus", "99", "--set", "accepted", expect=1)
+
+    def test_flagstatus_invalid_status_returns_2(self) -> None:
+        self.board("flag", "flag{test}")
+        self.board("flagstatus", "1", "--set", "bogus", expect=2)
+
+    def test_flagstatus_respects_challenge(self) -> None:
+        self.board("use", "web-a")
+        self.board("flag", "flag{test}")
+        self.board("use", "web-b")
+        self.board("flagstatus", "1", "--set", "accepted", expect=1)
+
+    def test_context_shows_status_and_evidence(self) -> None:
+        aid = self.make_artifact()
+        self.board("flag", "flag{test}", "--artifact", aid)
+        self.board("flagstatus", "1", "--set", "accepted")
+        out = self.board("context").stdout
+        self.assertIn("[accepted]", out)
+        self.assertIn(aid, out)
+
+    def test_read_flag_shows_new_fields(self) -> None:
+        self.board("flag", "flag{test}")
+        out = self.board("read", "g1").stdout
+        self.assertIn("status: candidate", out)
+        self.assertIn("artifacts:", out)
+
+    def _make_old_flags_db(self, with_challenge: bool) -> None:
+        self.db.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(self.db))
+        try:
+            if with_challenge:
+                con.execute(
+                    "CREATE TABLE flags (id INTEGER PRIMARY KEY, challenge TEXT NOT NULL DEFAULT 'default', "
+                    "value TEXT NOT NULL, source TEXT, created_at TEXT NOT NULL, UNIQUE(challenge, value))"
+                )
+                con.execute(
+                    "INSERT INTO flags (id, challenge, value, source, created_at) "
+                    "VALUES (1, 'legacy', 'flag{test}', '旧来源', '2026-01-01 00:00:00')"
+                )
+            else:
+                con.execute(
+                    "CREATE TABLE flags (id INTEGER PRIMARY KEY, value TEXT NOT NULL, "
+                    "source TEXT, created_at TEXT NOT NULL)"
+                )
+                con.execute(
+                    "INSERT INTO flags (id, value, source, created_at) "
+                    "VALUES (1, 'flag{test}', '旧来源', '2026-01-01 00:00:00')"
+                )
+            con.commit()
+        finally:
+            con.close()
+
+    def test_migration_adds_columns_to_existing_flags(self) -> None:
+        self._make_old_flags_db(with_challenge=True)
+        self.board("stats", "--all")
+        cols = {r[1] for r in self.query("PRAGMA table_info(flags)")}
+        self.assertTrue({"artifacts", "status", "verified_by", "note"} <= cols)
+        row = self.query("SELECT value, status, artifacts FROM flags WHERE id=1")[0]
+        self.assertEqual(row[0], "flag{test}")
+        self.assertEqual(row[1], "candidate")
+        self.assertEqual(row[2], "[]")
+
+    def test_migration_rebuilds_pre_challenge_flags(self) -> None:
+        self._make_old_flags_db(with_challenge=False)
+        self.board("stats", "--all")
+        cols = {r[1] for r in self.query("PRAGMA table_info(flags)")}
+        self.assertTrue({"challenge", "artifacts", "status"} <= cols)
+        row = self.query("SELECT challenge, value, status FROM flags WHERE id=1")[0]
+        self.assertEqual(row[0], "legacy")
+        self.assertEqual(row[1], "flag{test}")
+        self.assertEqual(row[2], "candidate")
+
+
 if __name__ == "__main__":
     unittest.main()

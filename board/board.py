@@ -25,7 +25,8 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
     python board.py fact "<标题>" "<增量结论>" --artifact a1x2y3-8f2a
     python board.py fact "<标题>" "<尚未证实的观察>"
     python board.py deadend "<原因>" --tested "<范围>" --observed "<结果>" [--artifact ID]
-    python board.py flag "<flag>" [--source "..."]
+    python board.py flag "<flag>" [--source "..."] [--artifact ID] [--status candidate]
+    python board.py flagstatus 1 --set accepted --verified-by "平台回显 correct"
     python board.py task add "<标题>" --detail "..." --priority 3
     python board.py task list [--status open|claimed|done|dropped|all] [--all]
     python board.py task claim 3 / task done 3 / task drop 3
@@ -56,7 +57,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.0.17"
+__version__ = "1.1.0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -91,6 +92,10 @@ CREATE TABLE IF NOT EXISTS flags (
     value      TEXT NOT NULL,
     source     TEXT,
     created_at TEXT NOT NULL,
+    artifacts  TEXT NOT NULL DEFAULT '[]',
+    status     TEXT NOT NULL DEFAULT 'candidate',
+    verified_by TEXT,
+    note       TEXT,
     UNIQUE(challenge, value)
 );
 CREATE TABLE IF NOT EXISTS claims (
@@ -229,6 +234,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 value      TEXT NOT NULL,
                 source     TEXT,
                 created_at TEXT NOT NULL,
+                artifacts  TEXT NOT NULL DEFAULT '[]',
+                status     TEXT NOT NULL DEFAULT 'candidate',
+                verified_by TEXT,
+                note       TEXT,
                 UNIQUE(challenge, value)
             )"""
         )
@@ -237,6 +246,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "SELECT id, 'legacy', value, source, created_at FROM flags_old"
         )
         conn.execute("DROP TABLE flags_old")
+        flag_cols = _columns(conn, "flags")
+
+    # 3b) flags 的证据与验证状态列（A4）：旧库补列，已有 flag 默认 candidate
+    if flag_cols:
+        if "artifacts" not in flag_cols:
+            conn.execute("ALTER TABLE flags ADD COLUMN artifacts TEXT NOT NULL DEFAULT '[]'")
+        if "status" not in flag_cols:
+            conn.execute("ALTER TABLE flags ADD COLUMN status TEXT NOT NULL DEFAULT 'candidate'")
+        if "verified_by" not in flag_cols:
+            conn.execute("ALTER TABLE flags ADD COLUMN verified_by TEXT")
+        if "note" not in flag_cols:
+            conn.execute("ALTER TABLE flags ADD COLUMN note TEXT")
     claim_cols = _columns(conn, "claims")
     if claim_cols and "challenge" not in claim_cols:
         conn.execute("ALTER TABLE claims RENAME TO claims_old")
@@ -457,9 +478,23 @@ def cmd_deadend(args: argparse.Namespace) -> int:
     return 0
 
 
+FLAG_STATUSES = ("candidate", "submitted", "accepted", "rejected")
+
+
 def cmd_flag(args: argparse.Namespace) -> int:
     conn = connect()
     ch = current_challenge(conn)
+    artifacts = parse_artifacts(args)
+    code = verify_artifacts(artifacts)
+    if code != 0:
+        return code
+    status = getattr(args, "status", None) or "candidate"
+    if status not in FLAG_STATUSES:
+        print(
+            f"未知 flag 状态：{status}（可选 {' / '.join(FLAG_STATUSES)}）",
+            file=sys.stderr,
+        )
+        return 2
     existing = conn.execute(
         "SELECT id, challenge FROM flags WHERE value = ?", (args.value,)
     ).fetchone()
@@ -471,18 +506,78 @@ def cmd_flag(args: argparse.Namespace) -> int:
                 f"g{existing['id']} 已记录在题 {existing['challenge']}，本题（{ch}）未重复写入"
             )
         return 0
+    note = getattr(args, "note", None)
     try:
         cur = conn.execute(
-            "INSERT INTO flags (challenge, value, source, created_at) VALUES (?, ?, ?, ?)",
-            (ch, args.value, args.source, now()),
+            "INSERT INTO flags (challenge, value, source, created_at, artifacts, status, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ch, args.value, args.source, now(), json.dumps(artifacts), status, note),
         )
     except sqlite3.IntegrityError:
         print(f"该 flag 已存在（全局唯一），本题（{ch}）未重复写入")
         return 0
     new_id = int(cur.lastrowid)
-    record(conn, "flag", {"challenge": ch, "id": new_id, "value": args.value, "source": args.source})
+    record(
+        conn,
+        "flag",
+        {
+            "challenge": ch,
+            "id": new_id,
+            "value": args.value,
+            "source": args.source,
+            "artifacts": artifacts,
+            "status": status,
+            "note": note,
+        },
+    )
     conn.commit()
-    print(f"g{new_id} 已记录候选 flag（{ch}）：{args.value}")
+    suffix = (
+        f"（证据 {', '.join(artifacts)}）"
+        if artifacts
+        else "（未绑定证据；建议补 --artifact，否则无法与证据库核对）"
+    )
+    print(f"g{new_id} 已记录 flag（{ch}，{status}）{suffix}：{args.value}")
+    return 0
+
+
+def cmd_flagstatus(args: argparse.Namespace) -> int:
+    """flag 验证状态机：candidate → submitted → accepted / rejected。"""
+    conn = connect()
+    ch = current_challenge(conn)
+    status = args.set
+    if status not in FLAG_STATUSES:
+        print(
+            f"未知 flag 状态：{status}（可选 {' / '.join(FLAG_STATUSES)}）",
+            file=sys.stderr,
+        )
+        return 2
+    row = conn.execute(
+        "SELECT id, challenge, status FROM flags WHERE id = ?", (args.id,)
+    ).fetchone()
+    if row is None:
+        print(f"没有 g{args.id}", file=sys.stderr)
+        return 1
+    if str(row["challenge"]) != ch:
+        print(f"g{args.id} 属于题 {row['challenge']}，不是当前题（{ch}）", file=sys.stderr)
+        return 1
+    conn.execute(
+        "UPDATE flags SET status = ?, verified_by = COALESCE(?, verified_by), "
+        "note = COALESCE(?, note) WHERE id = ?",
+        (status, args.verified_by, args.note, args.id),
+    )
+    commit_with_event(
+        conn,
+        "flag_status",
+        {
+            "challenge": ch,
+            "id": args.id,
+            "from": str(row["status"]),
+            "to": status,
+            "verified_by": args.verified_by,
+            "note": args.note,
+        },
+    )
+    print(f"g{args.id} 状态 {row['status']} → {status}（{ch}）")
     return 0
 
 
@@ -672,10 +767,18 @@ def cmd_context(args: argparse.Namespace) -> int:
     if flags:
         print("## 已获得的 flag / 候选")
         for row in flags:
+            data = dict(row)
+            arts = json.loads(data.get("artifacts") or "[]")
+            status = data.get("status") or "candidate"
             print(
-                f"- g{row['id']} `{row['value']}`  "
+                f"- g{row['id']} [{status}] `{row['value']}`  "
                 f"({row['source'] or '未注明来源'}, {row['created_at']}, 题 {row['challenge']})"
             )
+            print(f"  证据：{', '.join(arts) if arts else '（未绑定，建议补 --artifact）'}")
+            if data.get("verified_by"):
+                print(f"  判定依据：{short(data['verified_by'], 200)}")
+            if data.get("note"):
+                print(f"  备注：{short(data['note'], 200)}")
         print()
     if claims:
         print("## 进行中的认领（别碰别人的 lane）")
@@ -1106,10 +1209,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--artifact", action="append", default=[])
     p.set_defaults(func=cmd_deadend)
 
-    p = sub.add_parser("flag", help="记录候选 flag")
+    p = sub.add_parser("flag", help="记录 flag（可绑证据、可设状态）")
     p.add_argument("value")
     p.add_argument("--source", default=None)
+    p.add_argument("--artifact", action="append", default=[], help="证据 id，可重复")
+    p.add_argument("--status", default="candidate", choices=FLAG_STATUSES)
+    p.add_argument("--note", default=None, help="判定链 / 备注（如「与公开 writeup 同值但已实时取证」）")
     p.set_defaults(func=cmd_flag)
+
+    p = sub.add_parser("flagstatus", help="改 flag 验证状态：candidate/submitted/accepted/rejected")
+    p.add_argument("id", type=int)
+    p.add_argument("--set", required=True, choices=FLAG_STATUSES, dest="set")
+    p.add_argument("--verified-by", default=None, dest="verified_by", help="判定依据（平台回显 / 复核人）")
+    p.add_argument("--note", default=None)
+    p.set_defaults(func=cmd_flagstatus)
 
     p = sub.add_parser("claim", help="认领一个资源 lane")
     p.add_argument("lane")
