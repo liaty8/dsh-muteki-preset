@@ -26,8 +26,8 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
   name: ./muteki-orchestrator.mjs
   config:
     python: 'python'
-    boardPy: 'C:\Users\you\.dsh-muteki\board.py'
-    storageDir: 'C:\Users\you\.dsh-muteki\artifacts'
+    boardPy: '%USERPROFILE%\\.dsh-muteki\\board.py'
+    storageDir: '%USERPROFILE%\\.dsh-muteki\\artifacts'
     maxRunsPerHour: 12
     hardCancelOnFlag: true
     claudeBin: 'claude'

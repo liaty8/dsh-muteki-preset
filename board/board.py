@@ -42,8 +42,8 @@ flags 是折叠出来的视图；只有真实工具输出支持的结论才应�
 
 数据库默认在工作目录的 .muteki-board/board.db，可用 MUTEKI_BOARD_DB 覆盖；
 当前题可用 MUTEKI_CHALLENGE 覆盖（优先于 meta 里的值）。
-证据索引默认在 D:\\dsh\\home\\storages\\muteki-core\\index.jsonl，可用
-MUTEKI_ARTIFACT_DIR 覆盖（需与 muteki-core 插件的 artifactDir 一致）。
+证据索引默认在 ~/.dsh-muteki/artifacts（与 muteki-core 插件的默认 artifactDir 一致），可用
+MUTEKI_ARTIFACT_DIR 覆盖（需与 muteki-core 插件配置的一致）。
 """
 from __future__ import annotations
 

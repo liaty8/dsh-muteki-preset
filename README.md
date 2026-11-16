@@ -299,7 +299,7 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 |---|---|
 | `{{PYTHON}}` | 你的 python 可执行文件，例如 `python` 或 `C:\Python312\python.exe` |
 | `{{BOARD_PY}}` | `board.py` 的绝对路径 |
-| `{{STORAGE_DIR}}` | 证据库目录，例如 `C:\Users\you\.dsh-muteki\artifacts` |
+| `{{STORAGE_DIR}}` | 证据库目录，例如 `%USERPROFILE%\.dsh-muteki\artifacts` |
 | `{{CLAUDE_BIN}}` | `claude` 可执行文件（用不上 `muteki_cli` 可随便填） |
 | `{{CLAUDE_CONFIG_DIR}}` | Claude Code 的独立配置目录（同上） |
 

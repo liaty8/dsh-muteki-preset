@@ -18,7 +18,7 @@ Copy-Item .\muteki-core.mjs "$p\muteki-core.mjs" -Force
     - id: muteki-core
       name: ./muteki-core.mjs
       config:
-        artifactDir: 'C:\Users\you\.dsh-muteki\artifacts'
+        artifactDir: '%USERPROFILE%\\.dsh-muteki\\artifacts'
         maxPayloadBytes: 2097152
         enabled: true
 ```

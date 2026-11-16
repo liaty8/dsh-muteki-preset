@@ -14,6 +14,7 @@
  */
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 
@@ -21,7 +22,7 @@ export const name = 'muteki-core'
 export const inject = ['tools']
 
 export const Config = z.object({
-  artifactDir: z.string().default('D:\\dsh\\home\\storages\\muteki-core'),
+  artifactDir: z.string().default(join(homedir(), '.dsh-muteki', 'artifacts')),
   maxPayloadBytes: z.natural().default(2 * 1024 * 1024),
   enabled: z.boolean().default(true),
 })
@@ -57,7 +58,7 @@ function safeStringify(value) {
 
 export function apply(ctx, config) {
   if (config && config.enabled === false) return
-  const dir = String((config && config.artifactDir) || 'D:\\dsh\\home\\storages\\muteki-core')
+  const dir = String((config && config.artifactDir) || join(homedir(), '.dsh-muteki', 'artifacts'))
   const maxBytes = Number((config && config.maxPayloadBytes) || 2 * 1024 * 1024)
   const artifactsDir = join(dir, 'artifacts')
   const indexPath = join(dir, 'index.jsonl')
