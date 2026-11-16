@@ -8,6 +8,84 @@
 
 ---
 
+## [1.6.0] - 2026-11-16
+
+对应额度机制改造第 1 步：**硬题很容易打满每小时上限，然后干等**。新能力，升 minor。
+
+### 问题
+
+- `maxRunsPerHour: 12` / `maxCostUsdPerHour: 3` 是「无人值守防烧钱」的值，却被当成所有场景的默认。
+  人坐在屏幕前打一道硬题（几十上百个 Step）时，12 次/小时意味着大部分时间在等窗口滚动。
+- 每小时上限**防不住总花费**：12 次/h × 8 小时 = 96 次，没有任何东西拦得住一道题烧穿预算。
+- 四个入口的判定各写各的：`dispatch` 只查次数、`cli` 只查成本、`run` 查两者，口径容易分叉。
+- 美元口径失真：`costs.json` 记的是 Claude Code 按 **Anthropic 标价**的估算，接 DeepSeek 实际低一个数量级，
+  $3/h 估算 ≈ 实际 $0.3/h，紧得没有意义。
+
+### Added
+
+- **`mode` 配置**：`attended`（人主导，默认）/ `unattended`（无人值守、定时任务）。两套预设：
+
+  | 上限 | attended | unattended |
+  |---|---|---|
+  | 每小时派单 | 40 | 12 |
+  | 每小时成本 | $15 | $5 |
+  | 整题累计派单 | 300 | 100 |
+  | 整题累计成本 | $50 | $15 |
+
+- **整题累计总闸**：新账本 `totals.json`（按题累计、**不做 24h 清理**），新增
+  `maxRunsPerChallenge` / `maxCostUsdPerChallenge`。每小时上限防短时间失控，整题总闸防长时间烧穿。
+- **统一判定 `quotaState()`**：`muteki_dispatch` / `muteki_tick` / `muteki_run` / `muteki_cli`
+  四个闸门共用，命中任一上限即拒派/停止，报错点名「哪条上限、用了多少/上限多少、怎么恢复」。
+- **`muteki_run` 返回 `quota` 明细**：mode、四个 used/cap、`limitHit`；render 文本同步显示，
+  `stoppedReason: "budget"` 时不再需要猜是哪条闸拦的。
+- 导出 `PRESETS` 与 `resolveLimits(config)`（纯函数，便于测试与文档核对）。
+- **插件侧本地测试脚手架** `tests/orchestrator_harness.mjs` + `tests/test_orchestrator.mjs`（`node:test`）：
+  mock ctx + mock subagents 驱动**真实插件代码**，黑板侧调**真实 board.py** 子进程。
+  额度、停止条件、首解硬 cancel、任务回收从此不必进 DSH 就能回归。
+  依赖 DSH profile 的 `node_modules`（`DSH_NODE_MODULES` 指定），找不到则全部 skip；
+  用 junction 接依赖、清理前先 unlink，不会递归删到 DSH 的依赖；
+  `MUTEKI_TEST_PLUGIN` 可指向旧版插件做负向对照。
+
+### Changed
+
+- 四个额度字段改为**可省略**：省略即用 `mode` 预设，**显式写出的值优先**。
+  老配置里写死的 `maxRunsPerHour: 12` / `maxCostUsdPerHour: 3` 仍然被尊重，不会被预设悄悄改掉。
+- `preset/preset-muteki.patch.yml`：去掉写死的 `12` / `3`，改为 `mode: attended` + 预设说明注释；
+  **persona 里的额度描述同步更新**（否则 agent 以为还是 12 次/$3）。
+- `README.md`、`board/SKILL.md`、`plugins/dsh-muteki-orchestrator/README.md`：
+  额度表格、恢复方式、成本口径提醒、本地测试说明、目录结构。
+- 移除 `costBudgetLeft()`（被 `quotaState()` 取代）。
+
+### Migration
+
+- 无 schema 变更（黑板侧 untouched）。`totals.json` 首次派单时自动创建；
+  **历史派单不回填**，所以升级后整题累计从 0 开始计。
+- 已有安装若显式写着 `maxRunsPerHour: 12` / `maxCostUsdPerHour: 3`，行为不变；
+  要吃到新预设，把这两行删掉并加 `mode: attended`（或直接跑新版 `install.ps1` 生成的 patch）。
+- 插件文件覆盖后**需要重启 DSH**（ESM 按 URL 缓存模块）。
+
+### 验证
+
+```bash
+python -m unittest discover -s tests                                    # Ran 125 tests ... OK
+DSH_NODE_MODULES=<profile>/node_modules node --test tests/test_orchestrator.mjs   # 14 pass
+```
+
+- **负向对照**：同一套 14 个用例指向 v1.5.2 的插件 → **11 fail / 3 pass**；
+  通过的 3 个正是「tick 小时上限」「首解即停」「中断后任务回收」这些既有行为（回归护栏两边都该绿）。
+- 覆盖点：两套预设与非法值回落、显式覆盖优先、老配置不被改、每小时/整题两类闸门、
+  小时窗口滚过去后总闸仍生效、按题独立、tick 部分派单、cli 成本总闸、
+  run 的 budget 停止与 quota 明细、unattended 预设、empty/flag 停止与任务回收回归。
+
+### 后续（同一批额度改造）
+
+令牌桶消除「打满后干等 60 分钟」的悬崖 + `onQuota` 等待 + 显式越过额度；
+停滞熔断（连续无进展即停）；成本口径补全（DSH worker 花费记账 + basis 标注）。
+
+[1.6.0]: https://github.com/liaty8/dsh-muteki-preset/releases/tag/v1.6.0
+
+---
+
 ## [1.5.2] - 2026-11-16
 
 来自 DSH 实机验证反馈：**`context --budget N` 的输出会超过 N**。缺陷修复，升 patch。

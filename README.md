@@ -26,7 +26,7 @@
 - 主控先把题目拆成**有界任务**，再用程序化工具派给全新上下文的子代理；
 - 自动循环派单、首解即停、其余子代理立刻中断；
 - 支持用**本地 Claude Code CLI** 跑跨引擎异构；
-- 派单次数与成本都**按题独立限额**，一道题烧超了不会拖累下一道题。
+- 派单次数与成本都**按题独立限额**，且分「人主导 / 无人值守」两套预设，另有**整题累计总闸**，一道题烧超了不会拖累下一道题。
 
 > 思想来自开源项目 [FishCodeTech/muteki](https://github.com/FishCodeTech/muteki)（無敵 · Project Muteki）。
 > 本仓库没有复制它的源码，而是用 DSH 原生的子代理、任务、工具与插件能力重新实现了一套轻量版。
@@ -227,11 +227,21 @@ board.py context --all     # 跨题审计
 
 `muteki_run` 每 2 秒轮询 flag；一旦出现**本轮新增**的 flag，立即对同批其余子代理调用 `subagents.interrupt`（`kind: "ancestor"`），不再陪跑。可用 `hardCancelOnFlag: false` 关闭。
 
-### 6. 额度按题独立
+### 6. 额度按题独立，且分「人主导 / 无人值守」两套
 
-- 派单次数：每题每小时 `maxRunsPerHour`（默认 12）次；
-- CLI 成本：每题每小时 `maxCostUsdPerHour`（默认 $3）；
-- 切到新题不继承旧题额度；切回旧题时额度继续累计；
+额度由 `mode` 决定预设，四个字段都可以显式覆盖（显式值优先）：
+
+| 上限 | attended（人主导，默认） | unattended（无人值守/定时） | 账本 | 恢复方式 |
+|---|---|---|---|---|
+| 每题每小时派单 `maxRunsPerHour` | 40 | 12 | `runs.json`（滚动 1h） | 等窗口滚动 |
+| 每题每小时成本 `maxCostUsdPerHour` | $15 | $5 | `costs.json`（滚动 1h） | 等窗口滚动 |
+| **整题累计派单** `maxRunsPerChallenge` | 300 | 100 | `totals.json`（不清理） | 换题或调高配置 |
+| **整题累计成本** `maxCostUsdPerChallenge` | $50 | $15 | `totals.json`（不清理） | 换题或调高配置 |
+
+- 为什么要整题总闸：每小时上限只防「短时间失控」，一道硬题连打八小时照样能烧穿预算；`totals.json` 按题累计、跨小时不清零。
+- 切到新题不继承旧题额度；切回旧题时额度继续累计。
+- `muteki_dispatch` / `tick` / `run` / `cli` 四个入口共用同一套判定，不会口径分叉；`muteki_run` 返回 `quota` 明细与 `limitHit`，`stoppedReason: "budget"` 时能直接看出命中哪一条。
+- 美元是 **Claude Code 按 Anthropic 标价的估算**，接 DeepSeek 后端时实际账单低一个数量级（$15/h 估算 ≈ 实际 $1.5/h）。
 - 超限就用 `board.py task drop <id>` 放弃该题，或换题。
 
 ---
@@ -392,7 +402,10 @@ dsh-muteki-preset/
 │  └─ sensitive.local.txt          # 本地黑名单（.gitignore 排除，不提交）
 ├─ tests/
 │  ├─ test_board.py                # 黑板回归（子进程方式）
-│  └─ test_check_sensitive.py      # 门禁回归（含误报防护）
+│  ├─ test_check_sensitive.py      # 门禁回归（含误报防护）
+│  ├─ test_install.py              # 安装脚本冒烟（临时假 DSH_HOME）
+│  ├─ orchestrator_harness.mjs     # 插件测试脚手架（mock ctx + 真实 board.py）
+│  └─ test_orchestrator.mjs        # 插件回归（node:test，需 DSH 依赖，缺则 skip）
 └─ assets/icon.png
 ```
 
@@ -419,13 +432,18 @@ dsh-muteki-preset/
 |---|---|---|
 | `python` | `python` | 调 `board.py` 用的解释器 |
 | `boardPy` | `~/.dsh-muteki/board.py` | `board.py` 路径 |
-| `storageDir` | `~/.dsh-muteki/artifacts` | 证据与 `runs/costs/subagents/cli.jsonl` 存放 |
-| `maxRunsPerHour` | `12` | 每题每小时派单上限 |
+| `storageDir` | `~/.dsh-muteki/artifacts` | 证据与 `runs/costs/totals/subagents/cli` 账本存放 |
+| `mode` | `attended` | `attended`=人主导（额度宽）；`unattended`=无人值守/定时任务（额度紧） |
+| `maxRunsPerHour` | 按 mode（40 / 12） | 每题每小时派单上限 |
+| `maxCostUsdPerHour` | 按 mode（$15 / $5） | 每题每小时成本上限（估算口径） |
+| `maxRunsPerChallenge` | 按 mode（300 / 100） | 整题累计派单总闸，不随小时重置 |
+| `maxCostUsdPerChallenge` | 按 mode（$50 / $15） | 整题累计成本总闸 |
 | `hardCancelOnFlag` | `true` | 出现本轮 flag 后中断同批子代理 |
 | `claudeBin` | `claude` | Claude Code CLI 路径 |
 | `claudeConfigDir` | 空 | 独立配置目录（建议指向一个干净、无插件的 config） |
-| `maxCostUsdPerHour` | `3` | 每题每小时 CLI 成本上限 |
 | `enabled` | `true` | 总开关 |
+
+四个额度字段省略即用 `mode` 预设；**显式写出的值优先**，所以老配置里写死的 `12` / `3` 不会被预设悄悄改掉。
 
 ---
 
@@ -477,6 +495,16 @@ python -m unittest discover -s tests -v
 全部用标准库 `unittest`，无需 pytest。黑板用例以**子进程**方式执行 `board.py`，
 因为「写操作后未提交」这类缺陷只在进程退出时暴露。
 
+插件侧另有一套 Node 测试（`node:test`，同样无需第三方框架），用 mock ctx + mock subagents
+驱动**真实插件代码**、黑板侧调**真实 board.py**，因此额度闸门与 `muteki_run` 的停止条件不必进 DSH 就能回归：
+
+```bash
+DSH_NODE_MODULES=<你的 DSH home>/profiles/desktop/node_modules \
+  node --test tests/test_orchestrator.mjs
+```
+
+找不到 DSH 依赖时这套用例全部 **skip**（不算失败）。细节见 `plugins/dsh-muteki-orchestrator/README.md`。
+
 ---
 
 ## 边界与安全
@@ -485,7 +513,7 @@ python -m unittest discover -s tests -v
 - **运行期数据含敏感信息**：证据文件与黑板库会记录真实目标、cookie、token 与 flag。它们已被 `.gitignore` 排除；发布前务必跑 `python scripts/check_sensitive.py`（见上一节）。
 - **Reviewer 只读**：`muteki_review` 只读黑板、不碰目标。
 - **没有平台提交闭环**：flag 仍需要你手动复制到 CTF 平台；这是刻意留给人确认的一步。
-- **额度不是硬沙箱**：`$3/h` 是估算上限（Claude Code 按 Anthropic 价估算，接 DeepSeek 后端时实际更低），不是账单保证。
+- **额度不是硬沙箱**：attended 默认 $15/h、整题 $50（unattended $5/h、整题 $15）都是**估算**上限（Claude Code 按 Anthropic 价估算，接 DeepSeek 后端时实际低一个数量级），不是账单保证；DSH 子代理的花费尚未计入账本。
 - **Windows 优先**：脚本与路径以 Windows 为主，Linux/macOS 需把 `install.ps1` 的路径替换成对应 shell 写法。
 
 ---

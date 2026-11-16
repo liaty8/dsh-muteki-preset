@@ -71,7 +71,7 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 **开局门槛**：拿到新题先 `board.py use <题名>` 切到干净题，再 `task add` 拆成至少 2 条有界 Step，然后 `muteki_run`；不要绕过队列自己单干到结束（只有队列空、收尾核对时可以自己做）。`muteki_run` 会自动切题并只认「开工后新出现的 flag」，所以上一题残留的 flag 不会让它一开工就误停。
 
-在 Muteki 蜂群预设下，`muteki_run` 是最省事的一个：给它轮数或分钟上限，它自动反复「取 open 任务 → 原子认领 → 派子代理 → 等这批完成 → 查黑板」，队列空、出现 flag、超时或达到本题每小时派单上限就停，返回 `stoppedReason`。出现 flag 时会立即中断同批其余子代理（首解硬 cancel，不陪跑）。派单额度按题独立：某一题打满 12 次/小时后，换一道新题仍从满额度开始，旧题不会拖累新题；遇到特别难的题超限，就 `task drop` 放弃它、`use` 切到新题，把预算留给新题。
+在 Muteki 蜂群预设下，`muteki_run` 是最省事的一个：给它轮数或分钟上限，它自动反复「取 open 任务 → 原子认领 → 派子代理 → 等这批完成 → 查黑板」，队列空、出现 flag、超时或额度用尽就停，返回 `stoppedReason` 与 `quota` 明细（命中哪条上限看 `quota.limitHit`）。出现 flag 时会立即中断同批其余子代理（首解硬 cancel，不陪跑）。额度按题独立且分两套：`mode: attended`（人主导，默认）每小时 40 次 / $15、整题累计 300 次 / $50；`mode: unattended`（无人值守）每小时 12 次 / $5、整题累计 100 次 / $15。每小时上限等窗口滚动就恢复；**整题总闸不会随时间恢复**，打满就 `task drop` 放弃它、`use` 切到新题（新题从满额度开始），或让人调高配置。
 
 `muteki_tick` 只驱动一轮调度：从任务队列取最高优先级的 open 任务（limit 1-3），原子认领后各派一个全新上下文的子代理，立即返回。
 
@@ -88,9 +88,9 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 参数：`prompt`（必填）、`name`、`lane`（先认领资源，认领失败就不派单）、`lane_ttl`、`provider`/`model`/`reasoning_effort`（指定不同模型做异构竞速）、`cwd`（决定用哪个工作区黑板）。
 
-默认每小时最多派 **12** 次（orchestrator 的 `maxRunsPerHour`，**按题独立**），防止无人值守时烧预算。子代理的启动/结束会记到 `{{STORAGE_DIR}}\subagents.jsonl`。
+派单额度由 orchestrator 的 `mode` 决定预设（`attended` 每小时 40 次、整题 300 次；`unattended` 每小时 12 次、整题 100 次），显式配置的 `maxRunsPerHour` / `maxRunsPerChallenge` 优先，**按题独立**。每小时次数记在 `runs.json`（滚动窗口），整题累计记在 `totals.json`（不清理）。子代理的启动/结束会记到 `{{STORAGE_DIR}}\subagents.jsonl`。
 
-成本上限按题独立：`muteki_cli` 每次调用会把 Claude Code 上报的 `total_cost_usd` 记进 `costs.json`；**本题**最近一小时累计超过 `maxCostUsdPerHour`（默认 3 美元）后，`muteki_cli` 与 `muteki_run` 都以 `budget` 停止派单。换新题不继承旧题成本，新题从 $0 开始；某题花超就先放下（`task drop`），把预算留给别的题。注意这是 Claude Code 按 Anthropic 标价估算的金额，接 DeepSeek 时实际账单更低。
+成本上限按题独立：`muteki_cli` 每次调用会把 Claude Code 上报的 `total_cost_usd` 记进 `costs.json`（每小时滚动）与 `totals.json`（整题累计）。**本题**每小时超过 `maxCostUsdPerHour`（attended $15 / unattended $5），或整题累计超过 `maxCostUsdPerChallenge`（attended $50 / unattended $15），`muteki_cli` 与 `muteki_run` 都以 `budget` 停止派单。每小时上限等窗口滚动恢复，整题总闸只能换题或调高配置。注意这是 Claude Code 按 Anthropic 标价估算的金额，接 DeepSeek 时实际账单低一个数量级；DSH 子代理的花费目前还没进这本账。
 
 ## 命令
 

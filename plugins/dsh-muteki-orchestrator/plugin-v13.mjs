@@ -11,7 +11,8 @@
  *   2. muteki_tick 工具：从黑板任务队列取 open 任务，原子认领后批量派单；
  *   3. muteki_run 工具：自动循环 tick，等子代理完成、发现 flag 即停止调度；
  *   4. 子代理生命周期记账（subagents.jsonl）；
- *   5. 每小时派单次数上限（runs.json）与每小时成本上限（costs.json）；
+ *   5. 额度闸门：每小时派单/成本上限（runs.json、costs.json）+ 整题累计总闸（totals.json），
+ *      按 mode（attended 人主导 / unattended 无人值守）取不同预设，显式 config 优先；
  *   6. muteki_cli 工具：用本地 Claude Code CLI（config-worker 干净配置）跑异构 Step。
  */
 import z from "@deepseek-ai/schemastery";
@@ -25,15 +26,55 @@ export const name = "muteki-orchestrator";
 
 export const inject = ["tools"];
 
+export const PRESETS = {
+  // attended：人坐在屏幕前主导做题，额度放宽（硬题需要几十上百个 Step）。
+  // unattended：无人值守 / 定时任务，额度收紧，防烧钱优先。
+  attended: { runsPerHour: 40, costPerHour: 15, runsPerChallenge: 300, costPerChallenge: 50 },
+  unattended: { runsPerHour: 12, costPerHour: 5, runsPerChallenge: 100, costPerChallenge: 15 },
+};
+
+/** 显式 config 优先于 mode 预设；缺失/非法值回落到预设。导出供测试与文档核对。 */
+export const resolveLimits = (config) => {
+  const mode = PRESETS[config?.mode] ? config.mode : "attended";
+  const preset = PRESETS[mode];
+  const pick = (value, fallback) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+  return {
+    mode,
+    runsPerHour: pick(config?.maxRunsPerHour, preset.runsPerHour),
+    costPerHour: pick(config?.maxCostUsdPerHour, preset.costPerHour),
+    runsPerChallenge: pick(config?.maxRunsPerChallenge, preset.runsPerChallenge),
+    costPerChallenge: pick(config?.maxCostUsdPerChallenge, preset.costPerChallenge),
+  };
+};
+
 export const Config = z.object({
   python: z.string().default("python"),
   boardPy: z.string().default(join(homedir(), ".dsh-muteki", "board.py")),
   storageDir: z.string().default(join(homedir(), ".dsh-muteki", "artifacts")),
-  maxRunsPerHour: z.number().step(1).min(1).default(12),
+  mode: z
+    .union([z.const("attended"), z.const("unattended")])
+    .default("attended")
+    .comment("attended=人主导（额度宽）；unattended=无人值守/定时任务（额度紧）"),
+  maxRunsPerHour: z
+    .number()
+    .step(1)
+    .min(1)
+    .comment("每题每小时派单上限；省略则用 mode 预设（attended 40 / unattended 12）"),
+  maxCostUsdPerHour: z
+    .number()
+    .comment("每题每小时成本上限（美元，估算口径）；省略则用 mode 预设（attended 15 / unattended 5）"),
+  maxRunsPerChallenge: z
+    .number()
+    .step(1)
+    .min(1)
+    .comment("整题累计派单总闸（不随小时重置）；省略则用 mode 预设（attended 300 / unattended 100）"),
+  maxCostUsdPerChallenge: z
+    .number()
+    .comment("整题累计成本总闸（美元，不随小时重置）；省略则用 mode 预设（attended 50 / unattended 15）"),
   hardCancelOnFlag: z.boolean().default(true),
   claudeBin: z.string().default("claude"),
   claudeConfigDir: z.string().default(""),
-  maxCostUsdPerHour: z.number().default(3),
   enabled: z.boolean().default(true),
 });
 
@@ -77,6 +118,7 @@ export function apply(ctx, config) {
     } catch {
       /* 账本写不进去不影响派单 */
     }
+    bumpTotals(challenge, { runs: 1 });
   };
 
   // ── 成本记账（CLI 引擎按 Claude Code 上报的 total_cost_usd 累计）──────────
@@ -106,9 +148,123 @@ export function apply(ctx, config) {
     } catch {
       /* 记账失败不影响结果 */
     }
+    bumpTotals(challenge, { usd: value });
   };
-  const costBudgetLeft = (challenge) =>
-    Math.max(0, config.maxCostUsdPerHour - totalCost(challenge));
+
+  // ── 整题累计总闸（totals.json）──────────────────────────────────────────
+  // runs.json / costs.json 只保留 24h（供滚动小时窗口用）。整题总闸要跨小时累计，
+  // 所以另记一份不清理的 totals：每小时上限防的是「短时间失控」，整题总闸防的是
+  // 「一道题连打八小时把预算烧穿」——后者以前没有任何东西拦得住。
+  const totalsFile = join(config.storageDir, "totals.json");
+  const readTotals = () => {
+    try {
+      const parsed = JSON.parse(readFileSync(totalsFile, "utf8"));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+  const totalsFor = (challenge) => {
+    const row = readTotals()[challenge ?? ""] || {};
+    return { runs: Number(row.runs) || 0, usd: Number(row.usd) || 0 };
+  };
+  const bumpTotals = (challenge, delta) => {
+    try {
+      const all = readTotals();
+      const key = challenge ?? "";
+      const cur = all[key] || {};
+      all[key] = {
+        runs: (Number(cur.runs) || 0) + (delta.runs || 0),
+        usd: Number(((Number(cur.usd) || 0) + (delta.usd || 0)).toFixed(6)),
+        since: cur.since || Date.now(),
+        updated: Date.now(),
+      };
+      mkdirSync(config.storageDir, { recursive: true });
+      writeFileSync(totalsFile, JSON.stringify(all), "utf8");
+    } catch {
+      /* 记账失败不影响派单 */
+    }
+  };
+
+  const LIMIT_LABELS = {
+    runsPerHour: "每小时派单",
+    costPerHour: "每小时成本($)",
+    runsPerChallenge: "整题累计派单",
+    costPerChallenge: "整题累计成本($)",
+  };
+
+  /** 统一额度判定：dispatch / tick / run / cli 四个闸门都用它，避免口径分叉。 */
+  const quotaState = (challenge) => {
+    const limits = resolveLimits(config);
+    const runsHour = recentRuns(challenge).length;
+    const costHour = totalCost(challenge);
+    const totals = totalsFor(challenge);
+    const hits = [];
+    if (runsHour >= limits.runsPerHour) {
+      hits.push({ limit: "runsPerHour", used: runsHour, cap: limits.runsPerHour });
+    }
+    if (costHour >= limits.costPerHour) {
+      hits.push({ limit: "costPerHour", used: Number(costHour.toFixed(4)), cap: limits.costPerHour });
+    }
+    if (totals.runs >= limits.runsPerChallenge) {
+      hits.push({ limit: "runsPerChallenge", used: totals.runs, cap: limits.runsPerChallenge });
+    }
+    if (totals.usd >= limits.costPerChallenge) {
+      hits.push({ limit: "costPerChallenge", used: Number(totals.usd.toFixed(4)), cap: limits.costPerChallenge });
+    }
+    return {
+      ok: hits.length === 0,
+      hits,
+      limits,
+      runsHour,
+      costHour,
+      runsTotal: totals.runs,
+      costTotal: totals.usd,
+    };
+  };
+
+  const quotaSummary = (state) => ({
+    mode: state.limits.mode,
+    runsHour: state.runsHour,
+    runsPerHour: state.limits.runsPerHour,
+    runsTotal: state.runsTotal,
+    runsPerChallenge: state.limits.runsPerChallenge,
+    costHour: Number(state.costHour.toFixed(4)),
+    costPerHour: state.limits.costPerHour,
+    costTotal: Number(state.costTotal.toFixed(4)),
+    costPerChallenge: state.limits.costPerChallenge,
+    limitHit: state.hits.map((hit) => hit.limit).join(","),
+  });
+
+  const quotaMessage = (challenge, state) => {
+    const parts = state.hits.map((hit) => `${LIMIT_LABELS[hit.limit]} ${hit.used}/${hit.cap}`);
+    const hourly = state.hits.some((hit) => hit.limit.endsWith("PerHour"));
+    const total = state.hits.some((hit) => hit.limit.endsWith("PerChallenge"));
+    return (
+      `额度已用尽（题 ${challenge}，模式 ${state.limits.mode}）：${parts.join("；")}。` +
+      (hourly ? "每小时上限等窗口滚动就会恢复。" : "") +
+      (total
+        ? "整题总闸不随时间恢复：换一道新题（不继承本题额度），或在配置里提高 maxRunsPerChallenge / maxCostUsdPerChallenge。"
+        : "")
+    );
+  };
+
+  const quotaSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      mode: { type: "string" },
+      runsHour: { type: "number" },
+      runsPerHour: { type: "number" },
+      runsTotal: { type: "number" },
+      runsPerChallenge: { type: "number" },
+      costHour: { type: "number" },
+      costPerHour: { type: "number" },
+      costTotal: { type: "number" },
+      costPerChallenge: { type: "number" },
+      limitHit: { type: "string" },
+    },
+  };
 
   const logSubagent = (kind, info) => {
     try {
@@ -238,7 +394,7 @@ ${contextText}
     name: "muteki_dispatch",
     description:
       "派发一个 Muteki 子代理执行一个有界 Step。可选先认领 lane（同一目标同时只允许一个执行者），" +
-      "并受每小时派单次数上限约束。子代理是全新上下文，不会继承当前会话历史；" +
+      "并受额度闸门约束（每小时派单/成本 + 整题累计总闸，按 mode 取预设）。子代理是全新上下文，不会继承当前会话历史；" +
       "任务描述要自带背景、预期证据和停止边界。",
     parameters: {
       prompt: {
@@ -305,12 +461,9 @@ ${contextText}
       const cwd = args.cwd || process.cwd();
       const challenge = currentChallenge(cwd);
 
-      const recent = recentRuns(challenge);
-      if (recent.length >= config.maxRunsPerHour) {
-        throw new Error(
-          `muteki_dispatch 频率上限：本题（${challenge}）最近一小时已派发 ${recent.length} 次（上限 ${config.maxRunsPerHour}）。` +
-            "等窗口滚动，或先收束已有子代理；换一道新题不会继承本题额度。",
-        );
+      const quota = quotaState(challenge);
+      if (!quota.ok) {
+        throw new Error(`muteki_dispatch ${quotaMessage(challenge, quota)}`);
       }
 
       if (args.lane) {
@@ -432,7 +585,7 @@ ${contextText}
 
       const dispatched = [];
       for (const task of tasks) {
-        if (recentRuns(challenge).length >= config.maxRunsPerHour) break;
+        if (!quotaState(challenge).ok) break;
         const activation = await dispatchTask(task, parent, exec, cwd, args, contextText, challenge);
         if (!activation) continue;
         dispatched.push({
@@ -449,7 +602,8 @@ ${contextText}
     name: "muteki_run",
     description:
       "自动循环驱动 Muteki 蜂群：反复从任务队列认领 open 任务并派子代理，等这一批完成后检查黑板，" +
-      "队列空、出现 flag、超时或达到派单上限就停止。适合「给一批任务，自己跑到出结果」。",
+      "队列空、出现 flag、超时或额度用尽（每小时上限 / 整题总闸）就停止，返回 stoppedReason 与 quota 明细。" +
+      "适合「给一批任务，自己跑到出结果」。",
     parameters: {
       challenge: {
         type: "string",
@@ -514,6 +668,7 @@ ${contextText}
             items: { type: "string" },
           },
           stoppedReason: { type: "string", required: true },
+          quota: quotaSchema,
         },
       },
       render: (_args, value) => [
@@ -522,7 +677,14 @@ ${contextText}
           text:
             `muteki_run 结束（题 ${value.challenge}，${value.stoppedReason}）：${value.rounds} 轮，` +
             `派发 ${value.dispatched.length} 个子代理` +
-            (value.flags.length ? `，本轮新 flag：${value.flags.join(", ")}` : ""),
+            (value.flags.length ? `，本轮新 flag：${value.flags.join(", ")}` : "") +
+            (value.quota
+              ? `\n额度（${value.quota.mode}）：本题 ${value.quota.runsHour}/${value.quota.runsPerHour} 次每小时、` +
+                `${value.quota.runsTotal}/${value.quota.runsPerChallenge} 次整题；` +
+                `$${value.quota.costHour}/${value.quota.costPerHour} 每小时、` +
+                `$${value.quota.costTotal}/${value.quota.costPerChallenge} 整题` +
+                (value.quota.limitHit ? `（命中 ${value.quota.limitHit}）` : "")
+              : ""),
         },
       ],
     },
@@ -568,7 +730,7 @@ ${contextText}
           stoppedReason = "timeout";
           break;
         }
-        if (recentRuns(challenge).length >= config.maxRunsPerHour || costBudgetLeft(challenge) <= 0) {
+        if (!quotaState(challenge).ok) {
           stoppedReason = "budget";
           break;
         }
@@ -583,7 +745,7 @@ ${contextText}
         const contextText = context.out.slice(0, 6000);
         const batch = [];
         for (const task of tasks) {
-          if (recentRuns(challenge).length >= config.maxRunsPerHour || costBudgetLeft(challenge) <= 0) break;
+          if (!quotaState(challenge).ok) break;
           const activation = await dispatchTask(
             task,
             parent,
@@ -645,7 +807,7 @@ ${contextText}
           stoppedReason = "timeout";
           break;
         }
-        if (recentRuns(challenge).length >= config.maxRunsPerHour || costBudgetLeft(challenge) <= 0) {
+        if (!quotaState(challenge).ok) {
           stoppedReason = "budget";
           break;
         }
@@ -664,6 +826,7 @@ ${contextText}
         dispatched,
         flags: freshFlags().map(flagValue),
         stoppedReason,
+        quota: quotaSummary(quotaState(challenge)),
       };
       } finally {
         // 无论正常结束、超时还是被用户中断，都把本轮「派出但没做完」的任务
@@ -842,11 +1005,9 @@ ${focus}
     async execute(args, exec) {
       const cwd = args.cwd || process.cwd();
       const challenge = currentChallenge(cwd);
-      const budgetLeft = costBudgetLeft(challenge);
-      if (budgetLeft <= 0) {
-        throw new Error(
-          `muteki_cli 成本预算已用尽：本题（${challenge}）最近一小时 $${totalCost(challenge).toFixed(2)} / 上限 $${config.maxCostUsdPerHour}`,
-        );
+      const quota = quotaState(challenge);
+      if (!quota.ok) {
+        throw new Error(`muteki_cli ${quotaMessage(challenge, quota)}`);
       }
       if (!existsSync(config.claudeBin)) {
         throw new Error(`找不到 Claude Code CLI：${config.claudeBin}`);
