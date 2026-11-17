@@ -65,7 +65,7 @@ DSH 里的 `muteki-core` 插件会监听每一次真实工具调用，把「工�
 
 priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢不到直接报错，不要重试同一任务。
 
-被用户中断、子代理已经不在了，任务却还卡在 `claimed` 时，用 `task reopen <id>` 或 `task reclaim --minutes 30` 把它们释放回 `open`；否则 `muteki_run` 会看到空队列直接停。`muteki_run` 正常/异常结束时会自动释放本轮没做完的任务。
+被用户中断、子代理已经不在了，任务却还卡在 `claimed` 时，用 `task reopen <id>` 或 `task reclaim --minutes 30` 把它们释放回 `open`。`muteki_run` / `muteki_tick` 开工时会自动先跑一次 `task reclaim --minutes 30`；`muteki_run` 正常/异常结束时还会自动释放本轮没做完的任务。手动 `muteki_dispatch` 等其它场景仍可按上面命令手动释放。
 
 ## 派子代理（muteki_run / muteki_tick / muteki_dispatch / muteki_review / muteki_cli）
 
@@ -90,9 +90,9 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 **停滞熔断**：进展只认「新增带证据的 fact」或「新增 flag」，observation 与 deadend 不算。连续 `stagnationLimit` 轮（attended 5 / unattended 3，0=关闭）无进展会写一条 `review --kind gap` 并停下等人换思路——**这时不要原样重跑，先 `review list --status open` 看意见**，再决定换方向、换入口还是换 `muteki_cli` 异构打一遍。注意前提是队列里有足够任务：每轮只取 `limit` 条，**队列先空会先以 `empty` 停止**，所以只放 3 条任务时看不到 5 轮停滞。
 
-`muteki_tick` 只驱动一轮调度：从任务队列取最高优先级的 open 任务（limit 1-3），原子认领后各派一个全新上下文的子代理，立即返回。
+`muteki_tick` 只驱动一轮调度：开工先回收卡在 claimed 的任务（与 `muteki_run` 一致），再从任务队列取最高优先级的 open 任务（limit 1-3），原子认领后各派一个全新上下文的子代理，立即返回。
 
-`muteki_review` 起一个**只读 Reviewer 子代理**审图：质疑没有证据的结论、指出重复、找验证缺口，意见写回黑板（`review list` 能看到）。它不碰目标、不执行攻击命令，适合在一个阶段结束或准备交 flag 前跑一次。
+`muteki_review` 起一个**只读 Reviewer 子代理**审图：质疑没有证据的结论、指出重复、找验证缺口，意见写回黑板（`review list` 能看到）。它不碰目标、不执行攻击命令，也**不计入额度**（不派单、不记账），适合在一个阶段结束或准备交 flag 前跑一次。
 
 `muteki_cli` 把同一个 Step 交给**本地 Claude Code CLI**（独立 `config-worker` 配置：空插件、无记忆、bypassPermissions、DeepSeek 后端）跑，返回它的最终输出与本次花费。它是独立进程，不占 DSH 的子代理席位，适合做真正的跨引擎异构竞速：同一道题让 DSH 子代理与 CC 各打一遍，结论都写回同一块黑板。注意 CLI 是异步调用（默认 5 分钟超时，不阻塞界面，但工具会一直等到它结束），prompt 里要写清「先读黑板、只做这一条、用 board.py 写回、结束 task done」。
 

@@ -7,7 +7,7 @@
 | 工具 | 作用 | 主要参数 |
 |---|---|---|
 | `muteki_dispatch` | 手动派一个 Step | `prompt`（必填）、`name`、`lane`、`lane_ttl`、`provider`、`model`、`reasoning_effort`、`cwd`、`override_quota`、`override_reason` |
-| `muteki_tick` | 从黑板任务队列取 1–3 条，批量派一轮 | `limit`（1–3）、`cwd`、`provider`、`model`、`override_quota` |
+| `muteki_tick` | 开工先回收卡住的 claimed 任务，再从黑板任务队列取 1–3 条批量派一轮 | `limit`（1–3）、`cwd`、`provider`、`model`、`override_quota` |
 | `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag / 查进展 → 直到空/flag/超时/额度/停滞 | `limit`、`max_rounds`、`max_minutes`、`challenge`、`cwd`、`provider`、`model`、`override_quota`、`override_reason` |
 | `muteki_review` | 起一个只读 Reviewer 审黑板，意见写回 review 表 | `cwd`、`focus` |
 | `muteki_cli` | 把 Step 交给本地 Claude Code CLI（独立进程、异步、不占子代理席位） | `prompt`、`cwd`、`timeout_minutes`（1–30）、`model`、`override_quota` |
@@ -63,7 +63,7 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 
 ## 额度闸门
 
-`muteki_dispatch` / `muteki_tick` / `muteki_run` / `muteki_cli` 四个入口共用同一套判定（`quotaState`），不会再出现「dispatch 拦、run 不拦」的口径分叉。命中任一上限即拒派 / 停止：
+`muteki_dispatch` / `muteki_tick` / `muteki_run` / `muteki_cli` 四个派单入口共用同一套判定（`quotaState`），不会再出现「dispatch 拦、run 不拦」的口径分叉。`muteki_review` 是只读审图，不派单也不记账，**不计入额度**。命中任一上限即拒派 / 停止：
 
 | 上限 | 账本 | 恢复方式 |
 |---|---|---|
@@ -82,6 +82,7 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
   并记 `overrides.jsonl`（带 `allowed` / `needed` / `blockedBy`）。令牌本来就够时 `overridden=false`、
   `overrideNote` 说明「未实际放宽，仅记录授权」，但痕迹照样留下。
 - **成本上限与整题总闸越不过去**，`override_quota` 对它们无效；撞上时 run 会优雅收束（`stoppedReason: "budget"` + `overrideNote` 说明原因），而不是整个工具报错。
+- 等令牌期间被用户中断（`exec.signal`）时，run 以 `stoppedReason: "interrupted"` 收束，不会伪装成 `budget`；未做完的任务照常释放回队列。
 - 批次内也照常判定：override 只放宽令牌，一轮里派到整题总闸就停。
 
 为什么要有整题总闸：每小时上限防的是「短时间失控」，但一道硬题连打八小时照样能烧穿预算——以前没有任何东西拦得住。`totals.json` 按题累计、跨小时不清零，切回旧题继续累计，换新题从 0 开始。

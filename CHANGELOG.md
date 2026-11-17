@@ -10,6 +10,54 @@
 
 ---
 
+## [1.10.1] - 2026-11-17
+
+DSH 只读审查反馈的一批问题合并处理，并带出上一轮未发版的用法小修（commit `daf371f`）。
+
+### Fixed
+
+- **worker 提示词里的裸 `board.py` 命令**（审查第 1 条，实际比报告的更多）：
+  `workerPrompt` 硬要求里 `context` / `task done` / `artifact list` / `deadend` / `flag` 共 5 行 7 处
+  写的是裸 `board.py ...`，子代理 cwd 是工作区、PATH 里没有 `board.py`，照字面执行会 command not found。
+  全部改为 `{{PYTHON}} {{BOARD}}` 模板（fillCmd 渲染成本机绝对路径）；
+  `muteki_dispatch` 的工具描述同步改为「命令绝对路径见 muteki-board 技能」。
+- **`muteki_tick` 不回收卡住的任务**（审查第 3 条）：上一轮 run 被中断留下 claimed 任务时，
+  手动 tick 会看到空队列。现在 tick 开工先跑 `task reclaim --minutes 30`，与 run 一致。
+- **等令牌期间被用户中断被误报成 `budget`**（审查第 3 条）：`ensureQuota` 等待被 `exec.signal`
+  打断后额度仍不足，run 原来一律按 `budget` 收束。现在如实返回 `stoppedReason: "interrupted"`，
+  render 附「被用户中断而停止（不是额度用尽）」说明；未做完的任务照常由 finally 释放回队列。
+
+### Changed
+
+- **persona「四个入口共用额度闸门」表述不准**（审查第 2 条）：同句列了 5 个工具，且
+  `muteki_review` 实际不过闸门也不记账。改为「四个派单入口（run/tick/dispatch/cli）共用额度闸门；
+  muteki_review 只读审图，不派单也不计额度」，SKILL / 插件 README / 主 README 同步写明豁免。
+- 带出 `daf371f` 的用法小修：`fact list` 列出已有事实与观察、`task claim --as` 别名、
+  `--all` 跨题语义与空列表提示、令牌充足时授权留痕的渲染文案。
+
+### Added
+
+- 插件测试 +3（46 → **49**）：worker 提示词命令全带绝对路径且无裸 `board.py`、
+  tick 开工回收 40 分钟前卡住的 claimed 任务、等令牌期间中断返回 `interrupted`。
+  三条均先对旧插件跑过负向对照（全部失败）再对新代码跑通。
+
+### 审查核对（未采纳项）
+
+- 「tool-agent-team 禁用理由已过时」**不成立**：本机 DSH 0.2.2-rc.3 的 dsh-base（0.1.3-alpha.2）
+  patch 里没有 agent-team / tool-agent-team，node_modules 也没有该包与 agentTeams 服务，
+  保留 `disabled: true` 与原注释。
+- 并发文件锁 / FIFO 归因窗口 / execFile 进程树残留：人主导单会话场景影响很小，
+  FIFO 待归属条目会被 start 事件权威覆盖，本版不动。
+- 本机 `muteki-core.mjs` 是手工定制版（有意不覆盖）；本机 SKILL 实路径版是安装渲染产物，均属设计内。
+
+### Migration
+
+- 无黑板 schema 变更、无配置字段变更。插件覆盖后需重启 DSH。
+- 行为变化：tick 开工多一次 reclaim（只释放 claimed 超过 30 分钟的任务）；
+  run 被中断时 `stoppedReason` 从 `budget` 变为 `interrupted`（监控/复盘脚本如有硬编码需同步）。
+
+---
+
 ## [1.10.0] - 2026-11-16
 
 DSH 实机验证（v1.9.1）反馈的一批问题合并处理。**发布节奏从本版起改为「3–5 个问题一个 release」**，

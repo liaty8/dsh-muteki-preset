@@ -216,13 +216,13 @@ board.py context --all     # 跨题审计
 | 工具 | 作用 |
 |---|---|
 | `muteki_dispatch` | 手动派一个 Step（可先 claim 资源 lane） |
-| `muteki_tick` | 从任务队列取 1–3 条，批量派一轮 |
-| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag / 查进展 → 直到队列空 / 出现 flag / 超时 / 额度用尽 / **连续多轮无进展** |
-| `muteki_review` | 起一个**只读** Reviewer 审图，意见写回 `review` |
+| `muteki_tick` | 开工先回收卡住的 claimed 任务，再从任务队列取 1–3 条批量派一轮 |
+| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag / 查进展 → 直到队列空 / 出现 flag / 超时 / 额度用尽 / 用户中断 / **连续多轮无进展** |
+| `muteki_review` | 起一个**只读** Reviewer 审图，意见写回 `review`；不派单、不记账、**不计入额度** |
 | `muteki_cli` | 把同类 Step 交给本地 Claude Code CLI（独立进程、异步、不占 DSH 子代理席位） |
 
 `muteki_run` 结束（含异常/中断）时会用 `finally` 把本轮没做完的任务释放回 `open`，不会留下假 `claimed`。
-返回值带 `stoppedReason`（`empty` / `flag` / `timeout` / `budget` / `rounds` / `stagnation`）、`quota` 明细、
+返回值带 `stoppedReason`（`empty` / `flag` / `timeout` / `budget` / `interrupted` / `rounds` / `stagnation`）、`quota` 明细、
 `resumeAt`（下一个令牌时刻）、`waitedMs`、`overridden`、`stagnantRounds`，停下来时能直接看出为什么停、什么时候能继续。
 
 ### 5. 首解硬 cancel

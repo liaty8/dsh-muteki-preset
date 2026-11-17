@@ -702,7 +702,7 @@ export function apply(ctx, config) {
 
   const workerPrompt = (task, contextText, challenge) => fillCmd(`你是 Muteki 蜂群的一名 Worker，只执行下面这一个有界 Step。
 
-当前题：${challenge || "default"}（黑板已按题隔离；你的所有 board.py 命令都只作用于这道题，不会看到旧题的结论）
+当前题：${challenge || "default"}（黑板已按题隔离；你的所有黑板命令都只作用于这道题，不会看到旧题的结论）
 
 ## 团队黑板（只读摘要）
 ${contextText}
@@ -713,14 +713,14 @@ ${contextText}
 详情：${task.detail || "（无）"}
 
 ## 硬要求
-1. 开始前先跑一次 \`board.py context\`：如果图中已有 flag，立刻 \`board.py task done ${task.id}\` 并结束，不要重复劳动。
+1. 开始前先跑一次 \`{{PYTHON}} {{BOARD}} context\`：如果图中已有 flag，立刻 \`{{PYTHON}} {{BOARD}} task done ${task.id}\` 并结束，不要重复劳动。
 2. 只推进这个任务；每条结论都要有真实工具输出作为证据。
 3. 结束前用黑板记录（命令行，命令说明见 muteki-board 技能）：
    - 有证据的新结论：\`{{PYTHON}} {{BOARD}} fact "<标题>" "<本 Step 的增量结论>" --artifact <证据id>\`
-     证据 id 必须先用 \`board.py artifact list\` 查真实存在的 a 开头 id；伪造会被 exit 2 拒绝。
-   - 实测排除的方向：\`board.py deadend "<原因>" --tested "<测试范围>" --observed "<实际结果>"\`
-   - 候选 flag：\`board.py flag "<值>" --source "<来源>"\`
-   - 完成后：\`board.py task done ${task.id}\`（id 写数字或带前缀都行：\`task done ${task.id}\` 等价于 \`task done t${task.id}\`）
+     证据 id 必须先用 \`{{PYTHON}} {{BOARD}} artifact list\` 查真实存在的 a 开头 id；伪造会被 exit 2 拒绝。
+   - 实测排除的方向：\`{{PYTHON}} {{BOARD}} deadend "<原因>" --tested "<测试范围>" --observed "<实际结果>"\`
+   - 候选 flag：\`{{PYTHON}} {{BOARD}} flag "<值>" --source "<来源>"\`
+   - 完成后：\`{{PYTHON}} {{BOARD}} task done ${task.id}\`（id 写数字或带前缀都行：\`task done ${task.id}\` 等价于 \`task done t${task.id}\`）
 4. 不写没有证据的"事实"；不确定的内容省略 --artifact（会记为 observation）。
 5. 提交完立即结束，不要续做别的任务。`);
 
@@ -938,6 +938,12 @@ ${contextText}
       if (!subagents) throw new Error("muteki_tick 需要 subagents 服务，但当前 scope 不可用");
       const cwd = args.cwd || process.cwd();
       const limit = Math.max(1, Math.min(3, args.limit ?? 2));
+      // 与 muteki_run 一致：先回收上次中断后卡在 claimed 的任务，否则手动 tick 会看到空队列。
+      try {
+        runBoard(["task", "reclaim", "--minutes", "30"], cwd);
+      } catch {
+        /* 没有卡住的任务时这条命令只打印提示，不影响派单 */
+      }
       const tasks = openTasks(cwd).slice(0, limit);
       if (tasks.length === 0) return { kind: "tick", dispatched: [] };
 
@@ -965,7 +971,7 @@ ${contextText}
     name: "muteki_run",
     description:
       "自动循环驱动 Muteki 蜂群：反复从任务队列认领 open 任务并派子代理，等这一批完成后检查黑板，" +
-      "队列空、出现 flag、超时、额度用尽或连续多轮无进展（stagnation）就停止，返回 stoppedReason、quota 明细与 resumeAt。" +
+      "队列空、出现 flag、超时、额度用尽、用户中断（interrupted）或连续多轮无进展（stagnation）就停止，返回 stoppedReason、quota 明细与 resumeAt。" +
       "派单速率用令牌桶（开局可突发 burstRuns 个，之后按 maxRunsPerHour 回填）；" +
       "onQuota=wait 时令牌不足会等回填（最多 maxWaitMinutes），attended 下也可带 override_quota=true 显式越过速率限制（留痕，不越过成本/整题总闸）。" +
       "适合「给一批任务，自己跑到出结果」。",
@@ -1060,6 +1066,9 @@ ${contextText}
             (value.stoppedReason === "stagnation"
               ? "\n已写一条 review（kind=gap）：先 board.py review list --status open 看意见，再决定换方向还是换引擎，不要原样重跑。"
               : "") +
+            (value.stoppedReason === "interrupted"
+              ? "\n被用户中断而停止（不是额度用尽）；未做完的任务已释放回队列，可再跑一次 muteki_run 继续。"
+              : "") +
             (value.quota
               ? `\n额度（${value.quota.mode}，成本口径 ${value.quota.costBasis}）：令牌 ${value.quota.tokens}/${value.quota.burstRuns}` +
                 `（回填 ${value.quota.runsPerHour} 次/h，${value.quota.onQuota}）；` +
@@ -1129,6 +1138,11 @@ ${contextText}
         overridden = overridden || gate.overridden;
         overrideNote = gate.overrideNote || overrideNote;
         overrideRequested = overrideRequested || gate.overrideRequested;
+        // 等令牌期间被用户中断：如实报 interrupted，不要伪装成额度用尽（budget）。
+        if (exec.signal?.aborted) {
+          stoppedReason = "interrupted";
+          break;
+        }
         if (!gate.state.ok) {
           stoppedReason = "budget";
           break;
@@ -1404,8 +1418,8 @@ ${focus}
         type: "string",
         required: true,
         description:
-          "完整自包含的任务。必须告诉它：先用 board.py context 读黑板、只推进这一条、" +
-          "结论用 board.py fact --artifact 写回、结束后 task done。",
+          "完整自包含的任务。必须告诉它：先用 context 命令读黑板（命令绝对路径见 muteki-board 技能）、只推进这一条、" +
+          "结论用 fact --artifact 写回、结束后 task done。",
       },
       cwd: { type: "string", description: "工作目录（决定黑板库与附件位置），默认当前目录。" },
       timeout_minutes: {

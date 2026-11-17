@@ -12,6 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 import {
   createHarness,
@@ -745,4 +746,73 @@ test("cost: run 的 quota 明细带 costBasis", { skip: SKIP_REASON }, async () 
     const out = await h.call("muteki_run", { challenge: "t-basis", limit: 1 });
     assert.equal(out.quota.costBasis, "actual");
   });
+});
+
+// ── 只读审查修复（v1.10.1）────────────────────────────────────────────────
+
+test("worker 提示词：黑板命令全部带绝对路径，不留裸 board.py", { skip: SKIP_REASON }, async () => {
+  await withHarness({}, async (h) => {
+    h.board(["use", "t-prompt"]);
+    h.seedTask("侦察");
+    await h.call("muteki_tick", {});
+    assert.equal(h.activations.length, 1);
+    const prompt = h.activations[0].opts.prompt[0].text;
+    const prefix = `${h.config.python} ${h.config.boardPy}`;
+    for (const sub of ["context", "artifact list", "deadend", "flag", "task done"]) {
+      assert.ok(prompt.includes(`${prefix} ${sub}`), `缺少绝对路径命令：${sub}`);
+    }
+    assert.ok(!/`board\.py\s/.test(prompt), "提示词里仍有裸 board.py 命令");
+    assert.ok(!prompt.includes("{{"), "模板占位符应当已被 fillCmd 替换");
+  });
+});
+
+test("tick: 开工先回收卡住的 claimed 任务，不再看到空队列", { skip: SKIP_REASON }, async () => {
+  await withHarness({}, async (h) => {
+    h.board(["use", "t-reclaim"]);
+    h.seedTask("卡住的任务");
+    h.board(["task", "claim", "1", "--owner", "ghost"]);
+    // 把认领时间拨回 40 分钟前（reclaim 阈值 30 分钟），模拟上一个会话中断。
+    execFileSync(
+      h.config.python,
+      [
+        "-c",
+        "import sqlite3; c = sqlite3.connect('.muteki-board/board.db'); " +
+          "c.execute(\"UPDATE tasks SET updated_at = datetime('now','localtime','-40 minutes') WHERE id=1\"); " +
+          "c.commit()",
+      ],
+      { cwd: h.ws },
+    );
+    const out = await h.call("muteki_tick", {});
+    assert.equal(out.dispatched.length, 1);
+    assert.equal(out.dispatched[0].taskId, 1);
+  });
+});
+
+test("run: 等令牌期间被用户中断 → interrupted 而不是 budget", { skip: SKIP_REASON }, async () => {
+  const signal = { aborted: false };
+  await withHarness(
+    {
+      config: { burstRuns: 1, maxRunsPerHour: 1, maxWaitMinutes: 1, maxRunsPerChallenge: 100 },
+      // 第一个 worker 干活时用户按下中断；第二轮撞上令牌不足进入等待。
+      worker: async () => {
+        signal.aborted = true;
+      },
+    },
+    async (h) => {
+      h.exec.signal = signal;
+      h.board(["use", "t-int"]);
+      h.seedTask("任务一");
+      h.seedTask("任务二");
+      const out = await h.call("muteki_run", { challenge: "t-int", limit: 1, max_rounds: 5 });
+      assert.equal(out.stoppedReason, "interrupted");
+      assert.equal(out.dispatched.length, 1);
+      const text = h.tools
+        .get("muteki_run")
+        .output.render({}, out)
+        .map((block) => block.text)
+        .join("\n");
+      assert.match(text, /被用户中断/);
+      assert.ok(!/额度用尽/.test(text.split("\n")[0]), "首行不应把中断说成额度问题");
+    },
+  );
 });
