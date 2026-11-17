@@ -537,6 +537,17 @@ DSH_NODE_MODULES=<你的 DSH home>/profiles/desktop/node_modules \
 
 ---
 
+## 发布完整性校验
+
+每个 release 附一份 `SHA256SUMS.txt`，记录 GitHub 源码 zip / tar.gz 两个压缩包的 SHA256。
+本项目是纯源码预设，没有可编译产物，Source code 压缩包就是完整发行物。下载后核对：
+
+```powershell
+Get-FileHash .\v1.10.1.zip -Algorithm SHA256   # 与 SHA256SUMS.txt 对应行比对
+```
+
+---
+
 ## 边界与安全
 
 - **不提供隔离**：Worker 会执行真实命令、访问目标服务。只在你拥有或明确获授权的题目与靶机上使用；不要跑不可信的恶意 challenge。
