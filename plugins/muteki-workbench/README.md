@@ -5,6 +5,9 @@
 
 ## 能力
 
+- **入口两处**：会话头部「Muteki 蜂群」标签旁的「工作台」胶囊按钮（`conversation.session.header.actions`
+  slot，独立 id、不 shadow 官方预设标签，非 muteki 会话不渲染），点击即展开右侧栏并切到工作台页签；
+  或直接在右侧栏页签列表里开「Muteki 工作台」。
 - **右侧栏页签「Muteki 工作台」**：mode（attended/unattended/bulk）、tier（lite/standard/max）、
   并发池、令牌回填/桶容量、每小时/整题成本墙、停滞熔断轮数，滑杆+数字输入；空值=跟随 patch/mode 预设。
 - **保存即生效，不用重启 DSH**：覆盖写进 `storageDir/settings.json`，orchestrator 在下一次额度判定读取
@@ -17,7 +20,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `server.mjs` | `ctx.webServer.register` 挂 `/api/muteki/settings`（GET/POST，白名单过滤）与 `/api/muteki/ledger` |
+| `server.mjs` | `ctx.inject(["webServer"])` 等服务就绪后 `webServer.register` 挂 `/api/muteki/settings`（GET/POST，白名单过滤）与 `/api/muteki/ledger`。**不能直读 `ctx.webServer`**：cordis 服务未 inject 时拿不到，会静默丢路由（实机 404 的根因） |
 | `client.js` | 浏览器半：`sidebarRightTabs.register` + `sidebar.right.pane.tab` slot 注册页签；自动开 pane 监听 |
 | `cordis.patch.yml` | 包自带 bundle patch：自挂服务端插件（`enabled` 可关） |
 | `package.json` | `dsh.bundle.patch` + `dsh.client`（platform web，inject sidebar-right / subagent UI） |
