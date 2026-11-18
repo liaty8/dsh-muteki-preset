@@ -31,6 +31,21 @@ const SETTINGS_KEYS = [
   "hardCancelOnFlag", "autoOpenPane",
 ];
 
+// 数字键：UI 的 <input> 给的是字符串，resolveLimits 只认 number，写入前 coerce。
+const NUMERIC_KEYS = new Set([
+  "poolSize", "maxRunsPerHour", "burstRuns", "maxWaitMinutes", "stagnationLimit",
+  "maxCostUsdPerHour", "maxRunsPerChallenge", "maxCostUsdPerChallenge",
+  "workerUsdPerMinute", "estimateToActual",
+]);
+
+function coerce(key, value) {
+  if (NUMERIC_KEYS.has(key) && typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return value;
+}
+
 function defaultStorageDir() {
   try {
     const cfg = JSON.parse(readFileSync(join(homedir(), ".dsh-muteki", "config.json"), "utf8"));
@@ -112,7 +127,7 @@ export function apply(ctx, config) {
         }
         const next = {};
         for (const key of SETTINGS_KEYS) {
-          if (body[key] !== undefined && body[key] !== null && body[key] !== "") next[key] = body[key];
+          if (body[key] !== undefined && body[key] !== null && body[key] !== "") next[key] = coerce(key, body[key]);
         }
         writeFileSync(settingsFile, JSON.stringify(next, null, 2) + "\n", "utf8");
         return { settings: next, file: settingsFile };

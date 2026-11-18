@@ -180,6 +180,12 @@ export function apply(ctx, config) {
     "hardCancelOnFlag",
   ];
   const settingsFile = join(config.storageDir, "settings.json");
+  // 数字键容错：工作台 <input> 可能写字符串，resolveLimits 只认 number，读时 coerce。
+  const SETTINGS_NUMERIC = new Set([
+    "poolSize", "maxRunsPerHour", "burstRuns", "maxWaitMinutes", "stagnationLimit",
+    "maxCostUsdPerHour", "maxRunsPerChallenge", "maxCostUsdPerChallenge",
+    "workerUsdPerMinute", "estimateToActual",
+  ]);
   let settingsCache = { mtime: -1, value: {} };
   const settingsOverride = () => {
     try {
@@ -188,7 +194,11 @@ export function apply(ctx, config) {
         const raw = JSON.parse(readFileSync(settingsFile, "utf8"));
         const value = {};
         for (const key of SETTINGS_KEYS) {
-          if (raw && raw[key] !== undefined && raw[key] !== null) value[key] = raw[key];
+          if (raw && raw[key] !== undefined && raw[key] !== null) {
+            let v = raw[key];
+            if (SETTINGS_NUMERIC.has(key) && typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) v = Number(v);
+            value[key] = v;
+          }
         }
         settingsCache = { mtime: ms, value };
       }

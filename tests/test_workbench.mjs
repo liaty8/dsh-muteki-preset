@@ -112,6 +112,26 @@ test("workbench: webServer 晚到也能注册（inject 等就绪，不静默丢�
   });
 });
 
+test("workbench: 数字键字符串写入被 coerce 成 number（滑杆覆盖才生效）", { skip: SKIP_REASON }, async () => {
+  await withServer({}, async (s) => {
+    const post = await s.call("/api/muteki/settings", "POST", { poolSize: "6", maxCostUsdPerHour: "12.5", mode: "bulk" });
+    assert.equal(post.json.data.settings.poolSize, 6);
+    assert.equal(post.json.data.settings.maxCostUsdPerHour, 12.5);
+    assert.equal(typeof post.json.data.settings.poolSize, "number");
+  });
+  // orchestrator 读侧也容错字符串（旧文件/其它写入方）
+  const h = await createHarness({});
+  try {
+    h.board(["use", "t-coerce"]);
+    h.seedTask("题一");
+    writeJson(h.ledger("settings.json"), { mode: "bulk", poolSize: "6" });
+    const out = await h.call("muteki_run", { challenge: "t-coerce" });
+    assert.equal(out.bulk.poolSize, 6, "字符串 poolSize 应被 coerce 生效");
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("orchestrator: settings.json 覆盖运行时生效，删除即收回", { skip: SKIP_REASON }, async () => {
   const h = await createHarness({});
   try {
