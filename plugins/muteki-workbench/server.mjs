@@ -28,14 +28,14 @@ const SETTINGS_KEYS = [
   "mode", "tier", "poolSize", "maxRunsPerHour", "burstRuns", "onQuota",
   "maxWaitMinutes", "stagnationLimit", "maxCostUsdPerHour", "maxRunsPerChallenge",
   "maxCostUsdPerChallenge", "workerUsdPerMinute", "estimateToActual", "costBasis",
-  "hardCancelOnFlag", "autoOpenPane",
+  "hardCancelOnFlag", "autoOpenPane", "currency", "usdToCny",
 ];
 
 // 数字键：UI 的 <input> 给的是字符串，resolveLimits 只认 number，写入前 coerce。
 const NUMERIC_KEYS = new Set([
   "poolSize", "maxRunsPerHour", "burstRuns", "maxWaitMinutes", "stagnationLimit",
   "maxCostUsdPerHour", "maxRunsPerChallenge", "maxCostUsdPerChallenge",
-  "workerUsdPerMinute", "estimateToActual",
+  "workerUsdPerMinute", "estimateToActual", "usdToCny",
 ]);
 
 function coerce(key, value) {
