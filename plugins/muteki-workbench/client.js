@@ -161,7 +161,14 @@ window.__ModuleLoader__.load({
     // 契约对照 helmd：conversation.session.header.actions slot，独立 id 不shadow官方预设标签；
     // 非 muteki 预设的会话返回 null，绝不干扰其它预设。
     function WorkbenchCapsule(props) {
-      if (props.preset === undefined || props.preset !== "muteki") return null;
+      // 宿主 header slot 传的是 useSessions hook + sessionId，不是 preset 字段
+      // （对照 helmd：projectionValues.agentPreset 才是预设 id）。
+      var preset = props.useSessions ? props.useSessions(function (state) {
+        var s = state.byId && state.byId[props.sessionId];
+        var val = s && s.projectionValues && s.projectionValues.agentPreset;
+        return typeof val === "string" ? val : undefined;
+      }) : undefined;
+      if (preset === undefined || preset !== "muteki") return null;
       function open(e) {
         e.preventDefault();
         e.stopPropagation();
