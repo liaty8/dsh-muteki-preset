@@ -17,18 +17,19 @@ window.__ModuleLoader__.load({
       ".mw-root{--bg:#070b16;--surface:#0d1424;--overlay:#141d33;--line:#22304d;",
       "--cyan:#22d3ee;--green:#34d399;--acid:#a3e635;--amber:#fbbf24;--magenta:#e879f9;",
       "--red:#f87171;--violet:#8b5cf6;--text:#e6edf7;--dim:#8fa3c0;--faint:#5b6c8c;",
-      "position:relative;height:100%;overflow-y:auto;overflow-x:hidden;color:var(--text);",
-      "font:13px/1.55 'Segoe UI',system-ui,-apple-system,sans-serif;padding:16px 16px 96px;",
+      "position:relative;height:100%;display:flex;flex-direction:column;overflow:hidden;color:var(--text);",
+      "font:13px/1.55 'Segoe UI',system-ui,-apple-system,sans-serif;padding:0;",
       "background:radial-gradient(1100px 420px at 18% -12%,rgba(34,211,238,.10),transparent 60%),",
       "radial-gradient(900px 380px at 92% -6%,rgba(232,121,249,.09),transparent 62%),",
       "linear-gradient(180deg,#0a1020 0%,var(--bg) 40%);}",
       ".mw-root::before{content:'';position:absolute;inset:0;pointer-events:none;",
       "background:linear-gradient(rgba(34,211,238,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(34,211,238,.035) 1px,transparent 1px);",
       "background-size:28px 28px;mask-image:linear-gradient(180deg,#000 0%,transparent 70%);}",
-      ".mw-root::-webkit-scrollbar{width:10px}",
-      ".mw-root::-webkit-scrollbar-track{background:var(--bg)}",
-      ".mw-root::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--cyan),var(--violet));border-radius:8px;border:2px solid var(--bg)}",
-      ".mw-root::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,var(--acid),var(--magenta))}",
+      ".mw-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:16px 16px 12px;position:relative}",
+      ".mw-scroll::-webkit-scrollbar{width:10px}",
+      ".mw-scroll::-webkit-scrollbar-track{background:var(--bg)}",
+      ".mw-scroll::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--cyan),var(--violet));border-radius:8px;border:2px solid var(--bg)}",
+      ".mw-scroll::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,var(--acid),var(--magenta))}",
       ".mw-root>*{position:relative}",
       ".mw-eyebrow{font:600 10px/1 ui-monospace,'Cascadia Code',Consolas,monospace;letter-spacing:.22em;color:var(--cyan);text-transform:uppercase;display:flex;align-items:center;gap:8px}",
       ".mw-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(52,211,153,.6);animation:mwPulse 2s infinite}",
@@ -94,8 +95,8 @@ window.__ModuleLoader__.load({
       ".mw-num select{width:100%;box-sizing:border-box;background:var(--overlay);border:1px solid var(--line);border-radius:8px;color:var(--text);font:12px ui-monospace,monospace;padding:6px 8px}",
       ".mw-num select:focus{outline:none;border-color:var(--cyan)}",
       ".mw-span{grid-column:1 / -1;font-size:10.5px;color:var(--faint);line-height:1.5}",
-      ".mw-savebar{position:sticky;bottom:0;margin:18px -16px -96px;padding:14px 16px 18px;",
-      "background:linear-gradient(180deg,transparent,rgba(7,11,22,.92) 30%);backdrop-filter:blur(6px);display:flex;align-items:center;gap:12px}",
+      ".mw-savebar{flex:none;display:flex;align-items:center;gap:12px;padding:12px 16px;",
+      "border-top:1px solid var(--line);background:linear-gradient(180deg,rgba(13,20,36,.96),rgba(7,11,22,.99));backdrop-filter:blur(6px)}",
       ".mw-save{--g:linear-gradient(135deg,var(--cyan),var(--violet) 52%,var(--magenta));flex:1;cursor:pointer;border:none;border-radius:999px;",
       "padding:12px 18px;color:#041018;font-weight:800;font-size:13.5px;letter-spacing:.02em;position:relative;overflow:hidden;",
       "background:var(--g);box-shadow:0 8px 26px -10px var(--cyan),0 4px 14px -6px var(--magenta);transition:transform .16s,box-shadow .16s,filter .16s}",
@@ -325,6 +326,7 @@ window.__ModuleLoader__.load({
       });
 
       return h("div", { className: "mw-root" },
+        h("div", { className: "mw-scroll" },
         h("div", { className: "mw-sec", style: { animationDelay: "0ms" } },
           h("div", { className: "mw-eyebrow" }, h("span", { className: "mw-dot" }), "MUTEKI · SWARM CONSOLE"),
           h("div", { className: "mw-title" }, "蜂群工作台"),
@@ -394,7 +396,7 @@ window.__ModuleLoader__.load({
               return h("label", { className: "mw-num", key: f.key },
                 h("span", { className: "lb" }, f.label + (isCost ? "（" + sym + "）" : "")),
                 h("input", {
-                  type: "number", min: f.min, max: f.max, step: isCost ? 0.5 : 1,
+                  type: "number", name: f.key, min: f.min, max: f.max, step: isCost ? 0.5 : 1,
                   value: shown,
                   placeholder: "预设",
                   onChange: function (e) {
@@ -407,13 +409,14 @@ window.__ModuleLoader__.load({
             }).concat(isCny ? [h("label", { className: "mw-num", key: "rate" },
               h("span", { className: "lb" }, "汇率 USD→CNY"),
               h("input", {
-                type: "number", min: 1, max: 20, step: 0.1,
+                type: "number", name: "usdToCny", min: 1, max: 20, step: 0.1,
                 value: draft.usdToCny === undefined ? 7.2 : draft.usdToCny,
                 onChange: function (e) { set("usdToCny", e.target.value === "" ? 7.2 : Number(e.target.value)); },
               }))] : []).concat([
               h("label", { className: "mw-num", key: "basis" },
                 h("span", { className: "lb" }, "成本口径"),
                 h("select", {
+                  name: "costBasis",
                   value: draft.costBasis === "actual" ? "actual" : "estimate",
                   onChange: function (e) { set("costBasis", e.target.value); },
                 },
@@ -439,6 +442,7 @@ window.__ModuleLoader__.load({
                     h("div", { className: "cell" }, h("div", { className: "k" }, "剩余令牌"), h("div", { className: "v tok" }, Math.round(tok)))),
                   h("div", { className: "mw-bar" }, h("i", { style: { width: Math.max(4, Math.min(100, (tok / maxTok) * 100)) + "%" } })));
               }))),
+        ),
 
         h("div", { className: "mw-savebar" },
           h("span", { className: "mw-dirty" + (dirty ? "" : " clean") }, dirty ? "● 有未保存改动" : "○ 已同步"),
