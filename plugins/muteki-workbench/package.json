@@ -1,7 +1,12 @@
 {
   "name": "muteki-workbench",
   "version": "1.0.0",
-  "description": "Muteki 工作台：右侧栏滑杆调 mode/tier/并发/成本墙（运行时生效），派单自动打开子代理实时 pane",
+  "description": "Muteki 工作台：右侧栏档位按钮调 mode/tier/并发/成本墙（运行时生效、保存不用重启），人民币/美元账本快照，派单自动打开子代理实时 pane",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liaty8/dsh-muteki-preset.git",
+    "directory": "plugins/muteki-workbench"
+  },
   "type": "module",
   "main": "server.mjs",
   "exports": {
