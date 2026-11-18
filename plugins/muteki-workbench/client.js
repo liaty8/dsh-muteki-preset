@@ -179,14 +179,16 @@ window.__ModuleLoader__.load({
         var sid = props.sessionId;
         if (ctx.sidebarRight) {
           if (sid && typeof ctx.sidebarRight.openTabIn === "function") {
-            try { ctx.sidebarRight.openTabIn(sid, "muteki"); } catch (err) { /* 回落 openTab */ }
+            try { ctx.sidebarRight.openTabIn(sid, "muteki"); } catch (err) { console.error("[muteki-workbench] openTabIn failed:", err); }
           }
           if (typeof ctx.sidebarRight.openTab === "function") {
-            try { ctx.sidebarRight.openTab("muteki"); } catch (err) { /* 宿主无此面 */ }
+            try { ctx.sidebarRight.openTab("muteki"); } catch (err) { console.error("[muteki-workbench] openTab failed:", err); }
           }
           if (typeof ctx.sidebarRight.isExpanded === "function" && !ctx.sidebarRight.isExpanded()) {
-            try { ctx.sidebarRight.toggleExpanded(); } catch (err) { /* 同上 */ }
+            try { ctx.sidebarRight.toggleExpanded(); } catch (err) { console.error("[muteki-workbench] toggleExpanded failed:", err); }
           }
+        } else {
+          console.error("[muteki-workbench] no sidebarRight service");
         }
       }
       return h("button", {
@@ -204,14 +206,19 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = function (ctx) {
+      console.info("[muteki-workbench] apply; sidebarRightTabs=", !!ctx.sidebarRightTabs, "sidebarRight=", !!ctx.sidebarRight, "slots=", !!ctx.slots);
       if (ctx.sidebarRightTabs && typeof ctx.sidebarRightTabs.register === "function") {
         ctx.effect(function () {
-          return ctx.sidebarRightTabs.register({
+          var dispose = ctx.sidebarRightTabs.register({
             id: "muteki:workbench",
             kind: "muteki",
             title: function () { return "Muteki 工作台"; },
           });
+          console.info("[muteki-workbench] tab type registered kind=muteki");
+          return dispose;
         }, "muteki-workbench: sidebar tab definition");
+      } else {
+        console.error("[muteki-workbench] sidebarRightTabs.register unavailable");
       }
       ctx.slots.inject("sidebar.right.pane.tab", function* () {
         yield ctx.slots.register({ name: "sidebar.right.pane.tab", key: "muteki:workbench" }, WorkbenchPanel);
