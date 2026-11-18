@@ -132,6 +132,21 @@ test("workbench: 数字键字符串写入被 coerce 成 number（滑杆覆盖才
   }
 });
 
+test("orchestrator: attended 的 limit 被 clamp 到 1-3，返回体报生效值而非请求值", { skip: SKIP_REASON }, async () => {
+  const h = await createHarness({});
+  try {
+    h.board(["use", "t-clamp"]);
+    for (let i = 1; i <= 8; i++) h.seedTask(`靶题${i}`);
+    const out = await h.call("muteki_run", { challenge: "t-clamp", limit: 8, max_rounds: 6 });
+    assert.equal(out.bulk, undefined, "attended 不应走 bulk 路径");
+    assert.equal(out.limit, 3, "limit=8 应被 clamp 到 3");
+    assert.equal(out.dispatched.length, 8, "8 条任务分 3 轮派完（3+3+2），不是同时 8 并行");
+    assert.equal(out.rounds, 3);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("orchestrator: settings.json 覆盖运行时生效，删除即收回", { skip: SKIP_REASON }, async () => {
   const h = await createHarness({});
   try {

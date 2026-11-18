@@ -1510,6 +1510,9 @@ ${contextText}
         kind: "run",
         challenge,
         rounds,
+        // 生效的每轮并发（args.limit 已 clamp 到 1-3）。报出来避免把
+        // 「多轮累计派发数」误读成「同时并行数」。
+        limit,
         dispatched,
         flags: freshFlags().map(flagValue),
         stoppedReason,

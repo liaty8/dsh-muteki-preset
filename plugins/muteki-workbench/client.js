@@ -185,6 +185,7 @@ window.__ModuleLoader__.load({
     function normalize(o) {
       var out = {};
       if (o.mode) out.mode = o.mode;
+      if (o.tier) out.tier = o.tier;
       out.autoOpenPane = o.autoOpenPane !== false;
       out.currency = o.currency === "USD" ? "USD" : "CNY";
       out.usdToCny = Number(o.usdToCny) > 0 ? Number(o.usdToCny) : 7.2;
@@ -258,9 +259,11 @@ window.__ModuleLoader__.load({
             setStored(s);
             setDraft(function (prev) {
               if (prev) return prev; // 已有草稿不覆盖
-              var base = { mode: s.mode || "", autoOpenPane: s.autoOpenPane !== false, currency: s.currency === "USD" ? "USD" : "CNY", usdToCny: Number(s.usdToCny) > 0 ? Number(s.usdToCny) : 7.2 };
+              var base = { mode: s.mode || "attended", autoOpenPane: s.autoOpenPane !== false, currency: s.currency === "USD" ? "USD" : "CNY", usdToCny: Number(s.usdToCny) > 0 ? Number(s.usdToCny) : 7.2 };
+              if (s.tier) base.tier = s.tier;
               if (hasNums(s)) { NUMKEYS.forEach(function (k) { if (s[k] !== undefined) base[k] = s[k]; }); if (s.costBasis) base.costBasis = s.costBasis; }
-              else Object.assign(base, BUNDLES[1].v); // 默认推荐值
+              // 无覆盖时默认「人主导 + 跟随预设」：推荐档只以 badge 标示，
+              // 点选档位才写入 mode=bulk，避免「选了档位却仍跑 attended」的静默陷阱。
               return base;
             });
           }).catch(function () {});
@@ -279,21 +282,35 @@ window.__ModuleLoader__.load({
         setDraft(Object.assign({}, draft, (function () { var o = {}; o[k] = v; return o; })()));
         setSaveState("idle");
       }
-      function setNums(vals) {
-        var next = Object.assign({}, draft);
-        NUMKEYS.forEach(function (k) { delete next[k]; });
-        Object.assign(next, vals);
-        setDraft(next);
-        setSaveState("idle");
-      }
       function clearNums() {
         var next = Object.assign({}, draft);
         NUMKEYS.forEach(function (k) { delete next[k]; });
         delete next.costBasis;
+        delete next.tier;
         setDraft(next);
         setSaveState("idle");
       }
-      var activeTier = tierOf(draft);
+      // 切模式：离开 bulk 时清掉 tier，避免留下无意义的档位标记。
+      function setMode(id) {
+        var next = Object.assign({}, draft, { mode: id });
+        if (id !== "bulk") delete next.tier;
+        setDraft(next);
+        setSaveState("idle");
+      }
+      // 选档位 = 进入靶场批量 + 套用该档推荐值 + 记录 tier（orchestrator 按 tier 取预设）。
+      // UI 档位 id（safe/rec/full）映射到 orchestrator 的 BULK_TIERS key（lite/standard/max）。
+      var TIER_KEY = { safe: "lite", rec: "standard", full: "max" };
+      function applyTier(b) {
+        var next = Object.assign({}, draft);
+        NUMKEYS.forEach(function (k) { delete next[k]; });
+        Object.assign(next, b.v);
+        next.mode = "bulk";
+        next.tier = TIER_KEY[b.id] || "standard";
+        setDraft(next);
+        setSaveState("idle");
+      }
+      var numsTier = tierOf(draft);
+      var activeTier = draft.mode === "bulk" ? numsTier : "follow";
       var rate = Number(draft.usdToCny) > 0 ? Number(draft.usdToCny) : 7.2;
       var isCny = draft.currency !== "USD";
       var sym = isCny ? "¥" : "$";
@@ -340,31 +357,35 @@ window.__ModuleLoader__.load({
               h("button", {
                 className: "mw-mode" + (draft.mode === m.id ? " on" : ""),
                 style: { "--ac": m.ac },
-                onClick: function () { set("mode", m.id); },
+                onClick: function () { setMode(m.id); },
               }, h("div", { className: "ic" }, m.ic), h("div", { className: "nm" }, m.nm), h("div", { className: "ds" }, m.ds)));
           })),
           h(Tip, { text: "不写 mode 覆盖，沿用 profile 配置里的 mode（当前多为 attended）。" },
-            h("button", { className: "mw-follow" + (draft.mode === "" ? " on" : ""), onClick: function () { set("mode", ""); } }, "跟随配置")),
+            h("button", { className: "mw-follow" + (draft.mode === "" ? " on" : ""), onClick: function () { setMode(""); } }, "跟随配置")),
         ),
 
         h("div", { className: "mw-sec", style: { animationDelay: "120ms" } },
-          h("div", { className: "mw-sec-h" }, h("span", { className: "idx" }, "02"), "强度档位", h("span", { className: "hint" }, "一键套用推荐值")),
+          h("div", { className: "mw-sec-h" }, h("span", { className: "idx" }, "02"), "强度档位", h("span", { className: "hint" }, "点档位 = 切到靶场批量并套用推荐值")),
           h("div", { className: "mw-tiers" }, BUNDLES.map(function (b) {
-            return h(Tip, { key: b.id, text: b.name + "档：" + b.desc + "。并发 " + b.v.poolSize + "、回填 " + b.v.maxRunsPerHour + " 单/h、成本墙 " + sym + money(b.v.maxCostUsdPerHour).toFixed(0) + "/h、整批 " + sym + money(b.v.maxCostUsdPerChallenge).toFixed(0) + "。" },
+            return h(Tip, { key: b.id, text: b.name + "档：" + b.desc + "。点击即切到靶场批量模式。并发 " + b.v.poolSize + "、回填 " + b.v.maxRunsPerHour + " 单/h、成本墙 " + sym + money(b.v.maxCostUsdPerHour).toFixed(0) + "/h、整批 " + sym + money(b.v.maxCostUsdPerChallenge).toFixed(0) + "。" },
               h("button", {
                 className: "mw-tier" + (activeTier === b.id ? " on" : ""),
                 style: { "--ac": b.ac },
-                onClick: function () { setNums(b.v); },
+                onClick: function () { applyTier(b); },
               },
                 h("div", { className: "nm" }, b.name, b.badge ? h("span", { className: "badge" }, b.badge) : null),
                 h("div", { className: "ds" }, b.desc),
                 h("div", { className: "nums" }, "并发 " + b.v.poolSize + " · " + sym + money(b.v.maxCostUsdPerHour).toFixed(0) + "/h")));
           })),
           h("div", { style: { marginTop: 8, display: "flex", gap: 8, alignItems: "center" } },
-            h(Tip, { text: "清除所有数字覆盖，回到 mode 预设的默认额度。" },
-              h("button", { className: "mw-follow" + (activeTier === "follow" ? " on" : ""), onClick: clearNums }, "跟随预设")),
-            activeTier === "custom" ? h("span", { className: "mw-dirty" }, "自定义中") : null),
-          h("div", { className: "mw-readout" }, "当前生效意图 → ", h("b", null, fmtNums(draft, money, sym))),
+            h(Tip, { text: "清除所有数字覆盖与档位标记，回到 mode 预设的默认额度。" },
+              h("button", { className: "mw-follow" + (!hasNums(draft) ? " on" : ""), onClick: clearNums }, "跟随预设")),
+            numsTier === "custom" ? h("span", { className: "mw-dirty" }, "自定义中") : null),
+          hasNums(draft) && draft.mode !== "bulk"
+            ? h("div", { className: "mw-note" },
+                "当前不是靶场批量：并发池不启用，上面的数字只作为额度/并发覆盖生效。点任一档位可一键进入批量。")
+            : null,
+          h("div", { className: "mw-readout" }, "当前生效意图 → ", h("b", null, (draft.mode === "bulk" ? "靶场批量 · " : draft.mode === "unattended" ? "无人值守 · " : draft.mode === "attended" ? "人主导 · " : "跟随配置 · ") + fmtNums(draft, money, sym))),
         ),
 
         h("div", { className: "mw-sec", style: { animationDelay: "180ms" } },
