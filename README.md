@@ -294,7 +294,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 .\install.ps1 -Apply     # 会先备份 cordis.patch.yml
 ```
 
-> 安装脚本不会碰你的 `node_modules` 依赖、不会跑 `pnpm install`。改完 patch 后**新开一个会话**才会加载新预设。
+> 安装脚本不会碰你的 `node_modules` 依赖、不会跑 `pnpm install`。改完 patch 后**新开一个会话**才会加载新预设；
+> 但**工作台客户端（`client.js`）改动必须完整重启 DSH**——client bundle 的 rev 在 DSH 启动时计算，Ctrl+R / 新会话都不刷新。
 
 ### 方式二：手动安装
 
@@ -331,6 +332,21 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 > **不要混淆**：`muteki-orchestrator` 内部 worker / reviewer prompt 里也有 `{{PYTHON}}` / `{{BOARD}}` / `{{STORAGE}}`，
 > 那是**运行时**由插件的 `fillCmd()` 从配置（`python` / `boardPy` / `storageDir`）填充的，
 > 与安装占位符是两套独立机制，**不需要手工替换**，也不会被 `install.ps1` 处理。
+
+手动装工作台（可选，要右侧栏 UI 才装）等价于 `install.ps1` 的 `[2b/4]`，**四步缺一不可**：
+包复制到 `<profile>\muteki-workbench-pkg\`、junction 到 `node_modules\muteki-workbench`、
+profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、把 `muteki-workbench` 加进
+`dsh.profile.bundles` 白名单。详见 `plugins/muteki-workbench/README.md`「安装」。装完完整重启 DSH。
+
+### 安装后自检（加载失败排查）
+
+完整重启 DSH 后新开一个 Muteki 会话，逐项确认：
+
+1. **预设能加载**：会话工具列表里有 `muteki_run` / `muteki_dispatch` / `muteki_tick` 等。若整个预设「加载失败」，先查 `tool-agent-team` 行是否 `disabled: true`（rc.3 必需，见兼容性说明）。
+2. **黑板可用**：跑一条 `python <board.py 绝对路径> stats`，不报 command not found / 路径错。
+3. **工作台页签**：右侧栏有「Muteki 工作台」、会话头部「Muteki 蜂群」旁有「工作台」胶囊。没有 → 查 `dsh.profile.bundles` 是否含 `muteki-workbench`（只加依赖不进名单 = 不加载）。
+4. **设置路由不 404**：工作台能读出当前覆盖。404 → 服务端插件没挂载，同样查白名单与是否完整重启。
+5. **客户端更新生效**：改过 `client.js` 后 Ctrl+R / 新会话**不生效**，必须完整重启 DSH（client bundle rev 启动时计算）。
 
 ### 安装配置（`config.json`）
 
