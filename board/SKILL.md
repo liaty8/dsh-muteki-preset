@@ -92,6 +92,8 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 
 `muteki_tick` 只驱动一轮调度：开工先回收卡在 claimed 的任务（与 `muteki_run` 一致），再从任务队列取最高优先级的 open 任务（limit 1-3），原子认领后各派一个全新上下文的子代理，立即返回。
 
+**批量靶场（mode=bulk）**：一次打几十上百道独立题时把配置切 `mode: bulk`（tier `lite/standard/max` = 并发池 4/8/16，改完重启 DSH）。`use <靶场名>` 后**一题一条 task**（detail 自包含：目标地址/端口、预期证据、停止边界），一次 `muteki_run` 跑到队列抽干：完成驱动池——任一 worker 结束立刻补位，不等整批最慢者；flag 按题归属，**不做全局首解停摆**；无停滞熔断；worker 没标 done 的任务重试一次后 drop。`limit` 可临时覆盖池上限（1-16），`max_rounds` 不生效，`max_minutes` 默认 120。返回值带 `bulk` 明细（poolSize/peakPool/solved/dropped）。单道硬题深度攻坚仍用 attended。
+
 `muteki_review` 起一个**只读 Reviewer 子代理**审图：质疑没有证据的结论、指出重复、找验证缺口，意见写回黑板（`review list` 能看到）。它不碰目标、不执行攻击命令，也**不计入额度**（不派单、不记账），适合在一个阶段结束或准备交 flag 前跑一次。
 
 `muteki_cli` 把同一个 Step 交给**本地 Claude Code CLI**（独立 `config-worker` 配置：空插件、无记忆、bypassPermissions、DeepSeek 后端）跑，返回它的最终输出与本次花费。它是独立进程，不占 DSH 的子代理席位，适合做真正的跨引擎异构竞速：同一道题让 DSH 子代理与 CC 各打一遍，结论都写回同一块黑板。注意 CLI 是异步调用（默认 5 分钟超时，不阻塞界面，但工具会一直等到它结束），prompt 里要写清「先读黑板、只做这一条、用 board.py 写回、结束 task done」。

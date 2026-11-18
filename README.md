@@ -217,7 +217,7 @@ board.py context --all     # 跨题审计
 |---|---|
 | `muteki_dispatch` | 手动派一个 Step（可先 claim 资源 lane） |
 | `muteki_tick` | 开工先回收卡住的 claimed 任务，再从任务队列取 1–3 条批量派一轮 |
-| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag / 查进展 → 直到队列空 / 出现 flag / 超时 / 额度用尽 / 用户中断 / **连续多轮无进展** |
+| `muteki_run` | 自动循环：切题 → 回收卡住任务 → 取队列 → 派单 → 等结果 → 查 flag / 查进展 → 直到队列空 / 出现 flag / 超时 / 额度用尽 / 用户中断 / **连续多轮无进展**；`mode=bulk` 时改走完成驱动并发池（靶场批量） |
 | `muteki_review` | 起一个**只读** Reviewer 审图，意见写回 `review`；不派单、不记账、**不计入额度** |
 | `muteki_cli` | 把同类 Step 交给本地 Claude Code CLI（独立进程、异步、不占 DSH 子代理席位） |
 
@@ -229,7 +229,7 @@ board.py context --all     # 跨题审计
 
 `muteki_run` 每 2 秒轮询 flag；一旦出现**本轮新增**的 flag，立即对同批其余子代理调用 `subagents.interrupt`（`kind: "ancestor"`），不再陪跑。可用 `hardCancelOnFlag: false` 关闭。
 
-### 6. 额度按题独立，且分「人主导 / 无人值守」两套
+### 6. 额度按题独立，且分「人主导 / 无人值守 / 靶场批量」三套
 
 额度由 `mode` 决定预设，每个字段都可以显式覆盖（显式值优先）：
 
@@ -253,6 +253,7 @@ board.py context --all     # 跨题审计
 - **成本账本现在两种引擎都记**：`muteki_cli` 记 Claude Code 上报的 `total_cost_usd`（`basis: estimate-anthropic`）；DSH 子代理在 `subagent/end` 时按墙钟时间 × `workerUsdPerMinute` 估算（`basis: estimate-time`）。已核对 DSH 0.2.2-rc.3 的 `subagent/end` payload **不带 token usage**，所以只能估，并如实标注；将来版本带上 usage/costUsd 会自动改用真实值（`basis: actual`）。
 - 每条成本同时存 `usdEstimate`（Anthropic 标价口径）与 `usdActual`（× `estimateToActual`）。`costBasis` 决定闸门比哪一个，默认 `estimate`；接 DeepSeek 时 $15/h 估算 ≈ 实际 $1.5/h。
 - 整题总闸打满就用 `board.py task drop <id>` 放弃该题，或换题。
+- **`mode: bulk`（靶场批量）**：一次打几十上百道独立题时用。完成驱动并发池（tier `lite/standard/max` = 池 4/8/16，令牌与成本墙随档放宽），任一 worker 结束立刻补位；flag 按题归属、不做全局首解 cancel、无停滞熔断；没标 done 的任务重试一次后 drop。整批共用一个 challenge，一题一条 task。单题深度攻坚仍用 attended。档位表与用法见 `plugins/dsh-muteki-orchestrator/README.md`。
 
 ---
 

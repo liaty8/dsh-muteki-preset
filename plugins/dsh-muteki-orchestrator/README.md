@@ -42,7 +42,9 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 | `python` | `python` | 调 board.py 的解释器 |
 | `boardPy` | `~/.dsh-muteki/board.py` | 黑板脚本路径 |
 | `storageDir` | `~/.dsh-muteki/artifacts` | 证据与账本：`runs.json`、`costs.json`、`totals.json`、`buckets.json`、`overrides.jsonl`、`subagents.jsonl`、`cli.jsonl` |
-| `mode` | `attended` | `attended`=人主导（额度宽、给突发、可等待）；`unattended`=无人值守/定时任务（额度紧、不等待） |
+| `mode` | `attended` | `attended`=人主导单题攻坚（额度宽、给突发、可等待）；`unattended`=无人值守/定时任务（额度紧、不等待）；`bulk`=靶场批量（完成驱动并发池，见下节） |
+| `tier` | `standard` | 仅 bulk 生效：`lite` / `standard` / `max` 三档（池 4/8/16） |
+| `poolSize` | 按 tier | bulk 并发池上限（同时活跃 worker 数），1–32；宿主自身的活跃子代理上限仍然生效 |
 | `maxRunsPerHour` | 按 mode | 派单令牌的**每小时回填速率**；attended 40 / unattended 12 |
 | `burstRuns` | 按 mode | **令牌桶容量**=开局可一次性派多少单；attended 60 / unattended 12 |
 | `onQuota` | 按 mode | `muteki_run` 令牌不足时 `wait`（等回填）/ `stop`（立即停）；attended wait / unattended stop |
@@ -60,6 +62,24 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 | `enabled` | `true` | 总开关 |
 
 四个额度字段**省略即用 mode 预设**，显式写出的值优先（老配置里写死的 `12` / `3` 仍然被尊重，不会被预设悄悄改掉）。
+
+## bulk 靶场批量模式
+
+单题攻坚的形状（每轮 ≤3 个 worker、等整批最慢者、全局首解 cancel、停滞熔断）打**几十上百道独立题**的靶场是错的形状：编排轮次多、席位空转、第一个 flag 就把整批停掉。`mode: bulk` 换一条路径：
+
+- **完成驱动并发池**：任一 worker 结束立刻补派下一个 open 任务，不等整批最慢者；池上限按 tier（`limit` 参数可临时覆盖，1–16）。
+- **flag 按题归属**：整批共用一个 challenge，每个 worker 派单前快照 flag baseline，结束时差集归到该题；**不做全局首解 cancel**，worker 提示词也屏蔽了「图中已有 flag 就结束」的共享捷径。
+- **无停滞熔断**；worker 没自己标 done 的任务最多重试一次，再失败 `task drop`（返回值 `bulk.dropped` 计数）。
+- 收束条件：队列抽干且池空（`empty`）、额度（`budget`）、超时（`max_minutes` 默认 120）、用户中断（`interrupted`）。`max_rounds` 在 bulk 下不生效。
+- 返回值多一个 `bulk` 明细：`poolSize` / `peakPool` / `solved`（按题归属的 flag 数）/ `dropped`。
+
+| tier | 并发池 | 令牌桶 / 回填 | 成本墙（每小时 / 整批） | 整批派单总闸 |
+|---|---|---|---|---|
+| `lite` | 4 | 60 / 60 次/h | $10 / $30 | 600 |
+| `standard` | 8 | 120 / 120 次/h | $25 / $80 | 1200 |
+| `max` | 16 | 240 / 240 次/h | $60 / $200 | 2400 |
+
+用法：配置切 `mode: bulk`（重启 DSH），`board.py use <靶场名>` 后**一题一条 task**（detail 自包含：目标地址/端口、预期证据、停止边界），然后一次 `muteki_run` 跑到队列抽干。注意并发上限最终受宿主活跃子代理数限制，max 档在小席位机器上跑不满。单道硬题深度攻坚仍用 `attended`，两种模式共存。
 
 ## 额度闸门
 

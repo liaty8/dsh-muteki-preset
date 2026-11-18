@@ -39,12 +39,32 @@ export const PRESETS = {
     runsPerHour: 12, costPerHour: 5, runsPerChallenge: 100, costPerChallenge: 15,
     burstRuns: 12, onQuota: "stop", maxWaitMinutes: 0, stagnationLimit: 3,
   },
+  // bulk：靶场/批量模式。整批题共用一个 challenge，完成驱动池并行求解，
+  //       不设停滞熔断、不做全局首解 cancel（flag 按题归属）。数值按 tier 取。
+  bulk: { onQuota: "wait", maxWaitMinutes: 5, stagnationLimit: 0 },
+};
+
+/** bulk 三档：并发池 / 令牌 / 成本墙。显式 config 仍可覆盖每一项。 */
+export const BULK_TIERS = {
+  lite: {
+    poolSize: 4, runsPerHour: 60, costPerHour: 10, burstRuns: 60,
+    runsPerChallenge: 600, costPerChallenge: 30,
+  },
+  standard: {
+    poolSize: 8, runsPerHour: 120, costPerHour: 25, burstRuns: 120,
+    runsPerChallenge: 1200, costPerChallenge: 80,
+  },
+  max: {
+    poolSize: 16, runsPerHour: 240, costPerHour: 60, burstRuns: 240,
+    runsPerChallenge: 2400, costPerChallenge: 200,
+  },
 };
 
 /** 显式 config 优先于 mode 预设；缺失/非法值回落到预设。导出供测试与文档核对。 */
 export const resolveLimits = (config) => {
   const mode = PRESETS[config?.mode] ? config.mode : "attended";
-  const preset = PRESETS[mode];
+  const tier = BULK_TIERS[config?.tier] ? config.tier : "standard";
+  const preset = mode === "bulk" ? { ...PRESETS.bulk, ...BULK_TIERS[tier] } : PRESETS[mode];
   const pick = (value, fallback) =>
     typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
   const pickNonNeg = (value, fallback) =>
@@ -52,6 +72,8 @@ export const resolveLimits = (config) => {
   const onQuota = config?.onQuota === "wait" || config?.onQuota === "stop" ? config.onQuota : preset.onQuota;
   return {
     mode,
+    tier,
+    poolSize: Math.min(32, pick(config?.poolSize, preset.poolSize ?? 3)),
     runsPerHour: pick(config?.maxRunsPerHour, preset.runsPerHour),
     costPerHour: pick(config?.maxCostUsdPerHour, preset.costPerHour),
     runsPerChallenge: pick(config?.maxRunsPerChallenge, preset.runsPerChallenge),
@@ -68,9 +90,19 @@ export const Config = z.object({
   boardPy: z.string().default(join(homedir(), ".dsh-muteki", "board.py")),
   storageDir: z.string().default(join(homedir(), ".dsh-muteki", "artifacts")),
   mode: z
-    .union([z.const("attended"), z.const("unattended")])
+    .union([z.const("attended"), z.const("unattended"), z.const("bulk")])
     .default("attended")
-    .comment("attended=人主导（额度宽、给突发、可等待）；unattended=无人值守/定时任务（额度紧、不等待）"),
+    .comment("attended=人主导单题攻坚（额度宽、给突发、可等待）；unattended=无人值守/定时任务（额度紧、不等待）；bulk=靶场批量（完成驱动并发池，按 tier 取额度）"),
+  tier: z
+    .union([z.const("lite"), z.const("standard"), z.const("max")])
+    .default("standard")
+    .comment("bulk 模式档位：lite 池4/60次h/$10h；standard 池8/120次h/$25h；max 池16/240次h/$60h。仅 bulk 生效"),
+  poolSize: z
+    .number()
+    .step(1)
+    .min(1)
+    .max(32)
+    .comment("bulk 并发池上限（同时活跃 worker 数）；省略按 tier（4/8/16）。宿主自身的活跃子代理上限仍然生效"),
   maxRunsPerHour: z
     .number()
     .step(1)
@@ -724,15 +756,36 @@ ${contextText}
 4. 不写没有证据的"事实"；不确定的内容省略 --artifact（会记为 observation）。
 5. 提交完立即结束，不要续做别的任务。`);
 
+  /** bulk 模式提示词：整批共用黑板，必须屏蔽「图中已有 flag 就结束」的共享捷径。 */
+  const workerPromptBulk = (task, challenge) => fillCmd(`你是 Muteki 靶场批量模式的一名 Worker，只执行下面这一个有界 Step（一道独立题目）。
+
+当前批次：${challenge || "default"}（黑板整批共享，里面有**其它题**的结论与 flag：不要读它们，也不要因为图中已有 flag 就结束——只认你自己这道题打出来的 flag）
+
+## 你的任务
+任务编号：t${task.id}
+标题：${task.title}
+详情：${task.detail || "（无）"}
+
+## 硬要求
+1. 只推进这道题；每条结论都要有真实工具输出作为证据。
+2. 结束前用黑板记录（命令行，命令说明见 muteki-board 技能）：
+   - 有证据的新结论：\`{{PYTHON}} {{BOARD}} fact "<标题>" "<本 Step 的增量结论>" --artifact <证据id>\`
+     证据 id 必须先用 \`{{PYTHON}} {{BOARD}} artifact list\` 查真实存在的 a 开头 id；伪造会被 exit 2 拒绝。
+   - 实测排除的方向：\`{{PYTHON}} {{BOARD}} deadend "<原因>" --tested "<测试范围>" --observed "<实际结果>"\`
+   - 本题 flag：\`{{PYTHON}} {{BOARD}} flag "<值>" --source "<来源>"\`
+   - 完成后：\`{{PYTHON}} {{BOARD}} task done ${task.id}\`（id 写数字或带前缀都行）
+3. 不写没有证据的"事实"；不确定的内容省略 --artifact（会记为 observation）。
+4. 打出本题 flag 后写回并 task done，立即结束，不要续做别的任务。`);
+
   /** 认领并派发一个任务；返回 activation 或 null（认领失败）。 */
-  const dispatchTask = async (task, parent, exec, cwd, args, contextText, challenge) => {
+  const dispatchTask = async (task, parent, exec, cwd, args, contextText, challenge, opts = {}) => {
     const claim = runBoard(["task", "claim", String(task.id), "--owner", parent.id], cwd);
     if (claim.status !== 0) return null;
     notePending(challenge);
     const activation = await ctx.get("subagents").startActivation({
       provider: "spawn",
-      label: `tick-t${task.id}`,
-      prompt: [{ type: "text", text: workerPrompt(task, contextText, challenge) }],
+      label: opts.bulk ? `bulk-t${task.id}` : `tick-t${task.id}`,
+      prompt: [{ type: "text", text: opts.bulk ? workerPromptBulk(task, challenge) : workerPrompt(task, contextText, challenge) }],
       parent,
       signal: exec.signal,
       delivery: "parent",
@@ -744,6 +797,134 @@ ${contextText}
     noteWorker(activation.childId, challenge);
     recordRun(challenge);
     return activation;
+  };
+
+  /** bulk（靶场批量）：完成驱动并发池——任一 worker 结束立刻补派下一个 open 任务，
+   *  不等整批最慢者。flag 按「派单时 baseline 差集」归属到题，不做全局首解 cancel；
+   *  停滞熔断关闭；worker 没标 done 的任务最多重试一次，再失败就 drop。 */
+  const runBulk = async (args, exec, parent, cwd, challenge, started) => {
+    const limits = resolveLimits(config);
+    const poolSize = Math.max(1, Math.min(16, args.limit ?? limits.poolSize));
+    const maxMs = Math.max(1, Math.min(120, args.max_minutes ?? 120)) * 60_000;
+    const pool = new Map();
+    const attempts = new Map();
+    const dispatched = [];
+    const solvedFlags = new Set();
+    let dropped = 0;
+    let peakPool = 0;
+    let rounds = 0;
+    let stoppedReason = "empty";
+    let waitedMs = 0;
+    let overridden = false;
+    let overrideRequested = false;
+    let overrideNote = "";
+
+    try {
+      runBoard(["task", "reclaim", "--minutes", "30"], cwd);
+    } catch {
+      /* 没有卡住的任务时这条命令只打印提示，不影响派单 */
+    }
+    const trackGate = (gate) => {
+      waitedMs += gate.waitedMs;
+      overridden = overridden || gate.overridden;
+      overrideRequested = overrideRequested || gate.overrideRequested;
+      overrideNote = gate.overrideNote || overrideNote;
+    };
+
+    try {
+      for (;;) {
+        if (Date.now() - started > maxMs) {
+          stoppedReason = "timeout";
+          break;
+        }
+        if (exec.signal?.aborted) {
+          stoppedReason = "interrupted";
+          break;
+        }
+        // 补池：池空时才允许等令牌回填（池里还有人干活就不阻塞界面）
+        let tasks = openTasks(cwd);
+        let budgetHit = false;
+        while (pool.size < poolSize && tasks.length > 0) {
+          const gate = await ensureQuota(challenge, args, exec, cwd, pool.size === 0);
+          trackGate(gate);
+          if (exec.signal?.aborted) {
+            stoppedReason = "interrupted";
+            break;
+          }
+          if (!gate.state.ok) {
+            budgetHit = true;
+            break;
+          }
+          const task = tasks.shift();
+          // baseline 必须在派单**前**快照：极快 worker 可能在 startActivation 返回前就写回 flag
+          const baseline = new Set(knownFlags(cwd).map(flagValue));
+          const activation = await dispatchTask(task, parent, exec, cwd, args, "", challenge, { bulk: true });
+          if (!activation) continue;
+          attempts.set(task.id, (attempts.get(task.id) || 0) + 1);
+          pool.set(activation.childId, { task, activation, baseline });
+          dispatched.push({ taskId: task.id, childId: activation.childId, name: activation.name });
+          rounds += 1;
+          peakPool = Math.max(peakPool, pool.size);
+        }
+        if (stoppedReason === "interrupted") break;
+        if (pool.size === 0) {
+          stoppedReason = budgetHit ? "budget" : "empty";
+          break;
+        }
+        // 完成驱动：谁先结束谁先腾席位，立刻回到补池
+        const childId = await Promise.race(
+          [...pool.entries()].map(([id, item]) => item.activation.result.then(() => id, () => id)),
+        );
+        const item = pool.get(childId);
+        pool.delete(childId);
+        if (!item) continue;
+        for (const value of knownFlags(cwd).map(flagValue)) {
+          if (!item.baseline.has(value)) solvedFlags.add(value);
+        }
+        // worker 没自己标 done：没到重试上限就释放回 open，到了就 drop
+        let reopened = false;
+        try {
+          reopened = runBoard(["task", "reopen", String(item.task.id)], cwd).status === 0;
+        } catch {
+          /* 黑板异常不影响收束 */
+        }
+        if (reopened && (attempts.get(item.task.id) || 0) >= 2) {
+          try {
+            runBoard(["task", "drop", String(item.task.id)], cwd);
+            dropped += 1;
+          } catch {
+            /* 同上 */
+          }
+        }
+      }
+      const exitQuota = quotaState(challenge);
+      const tokenHit = exitQuota.hits.find((hit) => hit.limit === "tokens");
+      return {
+        kind: "run",
+        challenge,
+        rounds,
+        dispatched,
+        flags: [...solvedFlags],
+        stoppedReason,
+        quota: quotaSummary(exitQuota),
+        resumeAt: tokenHit ? Date.now() + (tokenHit.waitMs || 0) : 0,
+        waitedMs,
+        overridden,
+        overrideRequested,
+        overrideNote,
+        stagnantRounds: 0,
+        bulk: { poolSize, peakPool, solved: solvedFlags.size, dropped },
+      };
+    } finally {
+      // 与单题路径一致：派出但没做完的任务释放回 open，不留假 claimed
+      for (const item of dispatched) {
+        try {
+          runBoard(["task", "reopen", String(item.taskId)], cwd);
+        } catch {
+          /* 已完成（done）或已释放的任务 reopen 会失败，属正常 */
+        }
+      }
+    }
   };
 
   ctx.tools.register(defineTool({
@@ -972,6 +1153,8 @@ ${contextText}
     description:
       "自动循环驱动 Muteki 蜂群：反复从任务队列认领 open 任务并派子代理，等这一批完成后检查黑板，" +
       "队列空、出现 flag、超时、额度用尽、用户中断（interrupted）或连续多轮无进展（stagnation）就停止，返回 stoppedReason、quota 明细与 resumeAt。" +
+      "mode=bulk 时改走靶场批量路径：完成驱动并发池（tier lite/standard/max = 池 4/8/16），任一 worker 结束立刻补派，" +
+      "flag 按题归属、不做全局首解 cancel、无停滞熔断；整批题共用一个 challenge，适合一次打几十上百道独立题。" +
       "派单速率用令牌桶（开局可突发 burstRuns 个，之后按 maxRunsPerHour 回填）；" +
       "onQuota=wait 时令牌不足会等回填（最多 maxWaitMinutes），attended 下也可带 override_quota=true 显式越过速率限制（留痕，不越过成本/整题总闸）。" +
       "适合「给一批任务，自己跑到出结果」。",
@@ -993,7 +1176,7 @@ ${contextText}
       },
       limit: {
         type: "number",
-        description: "每轮最多并行派几个子代理，1-3，默认 2。",
+        description: "每轮最多并行派几个子代理，1-3，默认 2；mode=bulk 时为并发池上限 1-16（省略按 tier）。",
       },
       cwd: {
         type: "string",
@@ -1047,14 +1230,28 @@ ${contextText}
           overrideRequested: { type: "boolean" },
           overrideNote: { type: "string" },
           stagnantRounds: { type: "number" },
+          bulk: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              poolSize: { type: "number", required: true },
+              peakPool: { type: "number", required: true },
+              solved: { type: "number", required: true },
+              dropped: { type: "number", required: true },
+            },
+          },
         },
       },
       render: (_args, value) => [
         {
           type: "text",
           text:
-            `muteki_run 结束（题 ${value.challenge}，${value.stoppedReason}）：${value.rounds} 轮，` +
+            `muteki_run 结束（题 ${value.challenge}，${value.stoppedReason}）：` +
+            (value.bulk ? `${value.rounds} 次派单，` : `${value.rounds} 轮，`) +
             `派发 ${value.dispatched.length} 个子代理` +
+            (value.bulk
+              ? `\n批量模式：并发池 ${value.bulk.poolSize}（峰值 ${value.bulk.peakPool}），按题归属 flag ${value.bulk.solved} 个，重试耗尽放弃 ${value.bulk.dropped} 题`
+              : "") +
             (value.flags.length ? `，本轮新 flag：${value.flags.join(", ")}` : "") +
             (value.waitedMs ? `，等令牌 ${Math.round(value.waitedMs / 1000)}s` : "") +
             (value.overrideRequested
@@ -1104,6 +1301,10 @@ ${contextText}
       const used = runBoard(["use", challenge], cwd);
       if (used.status !== 0) {
         throw new Error(`切换题名 ${challenge} 失败：${used.out.slice(0, 200)}`);
+      }
+      // bulk（靶场批量）：完成驱动并发池，与单题攻坚的轮同步循环是两条路径。
+      if (resolveLimits(config).mode === "bulk") {
+        return await runBulk(args, exec, parent, cwd, challenge, started);
       }
       const baseline = new Set(knownFlags(cwd).map(flagValue));
       const freshFlags = () =>

@@ -37,6 +37,8 @@ test("resolveLimits: attended / unattended 两套预设", { skip: SKIP_REASON },
     const { resolveLimits, PRESETS } = h.mod;
     assert.deepEqual(resolveLimits({ mode: "attended" }), {
       mode: "attended",
+      tier: "standard",
+      poolSize: 3,
       runsPerHour: 40,
       costPerHour: 15,
       runsPerChallenge: 300,
@@ -48,6 +50,8 @@ test("resolveLimits: attended / unattended 两套预设", { skip: SKIP_REASON },
     });
     assert.deepEqual(resolveLimits({ mode: "unattended" }), {
       mode: "unattended",
+      tier: "standard",
+      poolSize: 3,
       runsPerHour: 12,
       costPerHour: 5,
       runsPerChallenge: 100,
@@ -813,6 +817,175 @@ test("run: 等令牌期间被用户中断 → interrupted 而不是 budget", { s
         .join("\n");
       assert.match(text, /被用户中断/);
       assert.ok(!/额度用尽/.test(text.split("\n")[0]), "首行不应把中断说成额度问题");
+    },
+  );
+});
+
+// ── bulk 靶场批量模式（完成驱动并发池）─────────────────────────────────────
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const taskIdOf = (name) => name.match(/t(\d+)$/)?.[1];
+
+test("resolveLimits: bulk 三档预设与显式覆盖", { skip: SKIP_REASON }, async () => {
+  await withHarness({}, async (h) => {
+    const { resolveLimits, BULK_TIERS } = h.mod;
+    const lite = resolveLimits({ mode: "bulk", tier: "lite" });
+    assert.equal(lite.poolSize, 4);
+    assert.equal(lite.runsPerHour, 60);
+    assert.equal(lite.costPerHour, 10);
+    assert.equal(lite.stagnationLimit, 0);
+    assert.equal(lite.onQuota, "wait");
+    const std = resolveLimits({ mode: "bulk" });
+    assert.equal(std.tier, "standard");
+    assert.equal(std.poolSize, 8);
+    assert.equal(std.costPerChallenge, 80);
+    const max = resolveLimits({ mode: "bulk", tier: "max" });
+    assert.equal(max.poolSize, 16);
+    assert.equal(max.runsPerHour, 240);
+    assert.equal(resolveLimits({ mode: "bulk", tier: "bogus" }).tier, "standard");
+    assert.equal(resolveLimits({ mode: "bulk", poolSize: 6 }).poolSize, 6);
+    assert.equal(resolveLimits({ mode: "bulk", poolSize: 99 }).poolSize, 32);
+    assert.equal(BULK_TIERS.max.costPerHour, 60);
+    // 非 bulk 模式不受 tier 影响
+    assert.equal(resolveLimits({ mode: "attended", tier: "max" }).poolSize, 3);
+  });
+});
+
+test("bulk: 并发池打满 tier 上限，队列抽干后收束", { skip: SKIP_REASON }, async () => {
+  let active = 0;
+  let peak = 0;
+  await withHarness(
+    {
+      config: { mode: "bulk", tier: "lite" },
+      worker: async ({ name, board }) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await sleep(120);
+        board(["task", "done", taskIdOf(name)]);
+        active -= 1;
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-bulk"]);
+      for (let i = 1; i <= 8; i += 1) h.seedTask(`题${i}`);
+      const out = await h.call("muteki_run", { challenge: "t-bulk" });
+      assert.equal(out.stoppedReason, "empty");
+      assert.equal(out.dispatched.length, 8);
+      assert.equal(out.bulk.poolSize, 4);
+      assert.equal(out.bulk.peakPool, 4);
+      assert.equal(peak, 4);
+      assert.equal(out.bulk.dropped, 0);
+      const list = h.board(["task", "list", "--status", "all"]).stdout;
+      assert.ok(!/\[open\]|\[claimed\]/.test(list), "全部任务应当 done");
+    },
+  );
+});
+
+test("bulk: 完成驱动——快 worker 结束立刻补位，不等慢 worker", { skip: SKIP_REASON }, async () => {
+  const starts = {};
+  const ends = {};
+  await withHarness(
+    {
+      config: { mode: "bulk", tier: "lite" },
+      worker: async ({ name, board }) => {
+        const id = taskIdOf(name);
+        starts[id] = Date.now();
+        await sleep(id === "1" ? 600 : 60);
+        board(["task", "done", id]);
+        ends[id] = Date.now();
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-bulk-pipe"]);
+      for (let i = 1; i <= 4; i += 1) h.seedTask(`题${i}`);
+      const out = await h.call("muteki_run", { challenge: "t-bulk-pipe", limit: 2 });
+      assert.equal(out.stoppedReason, "empty");
+      assert.equal(out.dispatched.length, 4);
+      assert.ok(starts["3"] < ends["1"], "t3 应当在慢 worker t1 结束前就补位开工");
+      assert.ok(out.bulk.peakPool <= 2);
+    },
+  );
+});
+
+test("bulk: flag 按题归属，不触发全局首解停摆", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { mode: "bulk", tier: "lite" },
+      worker: async ({ name, board }) => {
+        const id = taskIdOf(name);
+        if (id === "1") {
+          board(["flag", "flag{bulk-one}", "--source", "测试"]);
+        } else {
+          await sleep(200);
+        }
+        board(["task", "done", id]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-bulk-flag"]);
+      h.seedTask("题一");
+      h.seedTask("题二");
+      const out = await h.call("muteki_run", { challenge: "t-bulk-flag" });
+      assert.equal(out.stoppedReason, "empty", "bulk 不应因第一个 flag 全局停");
+      assert.equal(out.dispatched.length, 2);
+      assert.equal(out.bulk.solved, 1);
+      assert.deepEqual(out.flags, ["flag{bulk-one}"]);
+    },
+  );
+});
+
+test("bulk: worker 不标 done 的任务最多重试一次，再失败 drop", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    { config: { mode: "bulk", tier: "lite" }, worker: async () => {} },
+    async (h) => {
+      h.board(["use", "t-bulk-retry"]);
+      h.seedTask("题一");
+      h.seedTask("题二");
+      const out = await h.call("muteki_run", { challenge: "t-bulk-retry" });
+      assert.equal(out.stoppedReason, "empty");
+      assert.equal(out.dispatched.length, 4, "每题派两次");
+      assert.equal(out.bulk.dropped, 2);
+      const list = h.board(["task", "list", "--status", "all"]).stdout;
+      assert.ok(!/\[open\]|\[claimed\]/.test(list), "重试耗尽后应当 drop，不留 open");
+    },
+  );
+});
+
+test("bulk: 提示词屏蔽共享 flag 捷径；attended 的 limit 上限仍是 3", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { mode: "bulk", tier: "lite" },
+      worker: async ({ name, board }) => {
+        board(["task", "done", taskIdOf(name)]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-bulk-prompt"]);
+      h.seedTask("题一");
+      await h.call("muteki_run", { challenge: "t-bulk-prompt" });
+      const prompt = h.activations[0].opts.prompt[0].text;
+      assert.match(prompt, /不要因为图中已有 flag 就结束/);
+      assert.ok(!prompt.includes("如果图中已有 flag，立刻"), "bulk 不应带单题模式的共享 flag 捷径");
+    },
+  );
+  let active = 0;
+  let peak = 0;
+  await withHarness(
+    {
+      worker: async ({ name, board }) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await sleep(100);
+        board(["task", "done", taskIdOf(name)]);
+        active -= 1;
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-attended-cap"]);
+      for (let i = 1; i <= 6; i += 1) h.seedTask(`题${i}`);
+      const out = await h.call("muteki_run", { challenge: "t-attended-cap", limit: 9 });
+      assert.equal(peak, 3, "attended 单题路径 limit 仍夹在 3");
+      assert.equal(out.bulk, undefined);
     },
   );
 });

@@ -21,6 +21,7 @@
                 6. 蜂群并行（开局门槛）：拿到新题先 board.py use <题名>（如 web-8080）切到干净题，再 task add 拆成至少 2 条有界 Step，然后用 muteki_run 派单；不允许绕过队列自己单干到结束。muteki_run 开工前会自动 board.py use 到本轮题名（challenge 参数可显式指定），该题之前的 fact/deadend/task/flag 默认全部不可见，不会把上一题的残留当成本轮首解；只有队列已空、任务收束后的收尾核对可以自己做。用 muteki_run 自动循环派单（可设轮数/分钟上限；队列空、出现 flag、超时或达本题每小时上限即停；派单与成本额度都按题独立，换新题不继承旧题额度，某题超限就 task drop 放弃它、use 切新题；muteki_run 被中断后若队列仍空，先 board.py task reclaim --minutes 30 释放卡在 claimed 的任务），用 muteki_tick 只跑一轮，或用 muteki_dispatch 手动派单个 Step；每个子代理都是全新上下文；任务描述必须自包含（背景 + 预期证据 + 停止边界）；先交出有效 Flag 者胜，发现 flag 后立即停止派新单并把过程记为死路。
                 准备交 flag 或一个阶段结束时，用 muteki_review 起只读 Reviewer 审图：它会质疑没有证据的结论、指出重复、找验证缺口，意见写回黑板（review list 查看）；不要用无证据的 observation 直接交 flag。
                 需要跨引擎异构时，用 muteki_cli 把同类 Step 交给本地 Claude Code CLI（独立 config-worker 配置、DeepSeek 后端）跑一遍，结论同样写回黑板；CLI 成本按小时上限熔断。
+                批量靶场（一次几十上百道独立题）：config mode=bulk 时 muteki_run 走并发池路径——整批共用当前 challenge、一题一条 task、跑到队列抽干；不要因图中已有 flag 就停派，flag 按题归属。
                 7. 授权边界：只对用户拥有或明确获授权的题目与目标动手，不碰范围外的资产。
 
                 黑板是工作区级事实图，所有会话与子代理共享：
@@ -122,7 +123,7 @@
                   python: '{{PYTHON}}'
                   boardPy: '{{BOARD_PY}}'
                   storageDir: '{{STORAGE_DIR}}'
-                  mode: attended   # 人主导做题（额度宽、给突发、令牌不足会等）；无人值守 / 定时任务改 unattended
+                  mode: attended   # 人主导做题（额度宽、给突发、令牌不足会等）；无人值守 / 定时任务改 unattended；批量靶场改 bulk（tier lite/standard/max）
                   # 额度字段省略即用 mode 预设：
                   #   attended   令牌桶 60、回填 40 次/h、onQuota wait（最多 10 分钟）、$15/h、整题 300 次 / $50、停滞 5 轮
                   #   unattended 令牌桶 12、回填 12 次/h、onQuota stop、$5/h、整题 100 次 / $15、停滞 3 轮
