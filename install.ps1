@@ -107,10 +107,17 @@ if ($wbDst) {
     }
     if ($pkg.dependencies.PSObject.Properties.Name -notcontains "muteki-workbench") {
       $pkg.dependencies | Add-Member -NotePropertyName "muteki-workbench" -NotePropertyValue "file:./muteki-workbench-pkg"
-      $pkg | ConvertTo-Json -Depth 20 | Set-Content $pkgPath -Encoding UTF8
     }
+    # DSH 只加载 dsh.profile.bundles 白名单里的 bundle；只加依赖不进名单=服务端不挂载、UI 不出现
+    if (-not $pkg.dsh) { $pkg | Add-Member -NotePropertyName dsh -NotePropertyValue ([ordered]@{}) }
+    if (-not $pkg.dsh.profile) { $pkg.dsh | Add-Member -NotePropertyName profile -NotePropertyValue ([ordered]@{}) }
+    if (-not $pkg.dsh.profile.bundles) { $pkg.dsh.profile | Add-Member -NotePropertyName bundles -NotePropertyValue @() }
+    if ($pkg.dsh.profile.bundles -notcontains "muteki-workbench") {
+      $pkg.dsh.profile.bundles += "muteki-workbench"
+    }
+    $pkg | ConvertTo-Json -Depth 20 | Set-Content $pkgPath -Encoding UTF8
   }
-  Write-Host "[2b/4] 工作台已安装：$wbDst（junction + file: 依赖；重启 DSH 后右侧栏出现「Muteki 工作台」）"
+  Write-Host "[2b/4] 工作台已安装：$wbDst（junction + file: 依赖 + bundles 白名单；重启 DSH 后右侧栏出现「Muteki 工作台」）"
 }
 
 # 3) 生成片段

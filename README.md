@@ -285,7 +285,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 1. 把 `board.py` + `SKILL.md`（替换成你的真实路径）装到 `$DSH_HOME\skills\muteki-board\`；
 2. 把 `plugin-v13.mjs` 复制成 `<profile>\muteki-orchestrator.mjs`（**放 profile 根目录，不进 `node_modules`**，pnpm 不会移走它，插件页也不会误报「未生效」）；
 3. 把 `muteki-core.mjs` 放到 `<profile>\`；
-4. 装 `muteki-workbench` 工作台小包（`<profile>\muteki-workbench-pkg\` + junction + `file:` 依赖声明），重启后右侧栏出现「Muteki 工作台」页签；
+4. 装 `muteki-workbench` 工作台小包（`<profile>\muteki-workbench-pkg\` + junction + `file:` 依赖 + **进 `dsh.profile.bundles` 白名单**），重启后右侧栏出现「Muteki 工作台」页签；
 5. 生成 `preset-muteki.patch.yml`（已替换路径），**默认只输出文件**，并提示你把它追加到 profile 的 `cordis.patch.yml`。
 
 想让它自动追加：

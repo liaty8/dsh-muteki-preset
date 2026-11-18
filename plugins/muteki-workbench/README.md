@@ -27,11 +27,15 @@ headless（无 webServer）时服务端静默不注册，不影响做题。
 
 ## 安装
 
-`install.ps1` 会自动：包复制到 `<profile>/muteki-workbench-pkg/`、junction 到
-`node_modules/muteki-workbench`、在 profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖
-（有声明 pnpm install 才不会移走）。重启 DSH 后右侧栏出现页签。
+`install.ps1` 会自动四步：包复制到 `<profile>/muteki-workbench-pkg/`、junction 到
+`node_modules/muteki-workbench`、profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、
+**把 `muteki-workbench` 加进 `dsh.profile.bundles` 白名单**。重启 DSH 后右侧栏出现页签。
 
-手动装：同上三步，或把本目录作为 file: 依赖加入 profile package.json 后 `pnpm install`。
+**白名单是关键**：DSH 的 bundle 不按 dependencies 自动发现，只按 `dsh.profile.bundles`
+有序列表加载（见 dsh-app-boot 的 profile 组合逻辑）。只加依赖不进名单 = 服务端插件不挂载、
+设置路由 404、客户端页签不出现。helmd 之所以有工作台，正是因为它在名单里。
+
+手动装：同上四步，或把本目录作为 file: 依赖加入 profile package.json 并进 bundles 名单后 `pnpm install`。
 
 ## 边界
 
