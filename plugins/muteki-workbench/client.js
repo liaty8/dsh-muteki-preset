@@ -157,65 +157,58 @@ window.__ModuleLoader__.load({
       return h("span", null, "Muteki 工作台");
     }
 
-    // 会话头部胶囊按钮：点「Muteki 蜂群」旁的「工作台」胶囊 → 右侧栏弹工作台。
-    // 契约对照 helmd：conversation.session.header.actions slot，独立 id 不shadow官方预设标签；
-    // 非 muteki 预设的会话返回 null，绝不干扰其它预设。
-    function WorkbenchCapsule(props) {
-      // 宿主 header slot 传的是 useSessions hook + sessionId，不是 preset 字段
-      // （对照 helmd：projectionValues.agentPreset 才是预设 id）。
-      var preset = props.useSessions ? props.useSessions(function (state) {
-        var s = state.byId && state.byId[props.sessionId];
-        var val = s && s.projectionValues && s.projectionValues.agentPreset;
-        return typeof val === "string" ? val : undefined;
-      }) : undefined;
-      if (preset === undefined || preset !== "muteki") return null;
-      function open(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        var expandBtn = document.querySelector("[data-sidebar-right-expand]") ||
-          document.querySelector('button[aria-label="打开右侧边栏"]') ||
-          document.querySelector('button[aria-label="Open right sidebar"]');
-        if (expandBtn) { try { expandBtn.click(); } catch (err) { /* 展开按钮不在就算了 */ } }
-        var sid = props.sessionId;
-        if (ctx.sidebarRight) {
-          if (sid && typeof ctx.sidebarRight.openTabIn === "function") {
-            try { ctx.sidebarRight.openTabIn(sid, "muteki"); } catch (err) { console.error("[muteki-workbench] openTabIn failed:", err); }
-          }
-          if (typeof ctx.sidebarRight.openTab === "function") {
-            try { ctx.sidebarRight.openTab("muteki"); } catch (err) { console.error("[muteki-workbench] openTab failed:", err); }
-          }
-          if (typeof ctx.sidebarRight.isExpanded === "function" && !ctx.sidebarRight.isExpanded()) {
-            try { ctx.sidebarRight.toggleExpanded(); } catch (err) { console.error("[muteki-workbench] toggleExpanded failed:", err); }
-          }
-        } else {
-          console.error("[muteki-workbench] no sidebarRight service");
-        }
-      }
-      return h("button", {
-        onClick: open,
-        title: "打开 Muteki 工作台",
-        style: {
-          display: "inline-flex", alignItems: "center", gap: 4,
-          padding: "1px 9px", marginLeft: 6,
-          border: "1px solid var(--dsw-alias-state-success-primary)",
-          borderRadius: 999, background: "transparent",
-          color: "var(--dsw-alias-state-success-primary)",
-          fontSize: 11, lineHeight: "16px", cursor: "pointer",
-        },
-      }, "工作台");
-    }
-
     exports.apply = function (ctx) {
-      console.info("[muteki-workbench] apply; sidebarRightTabs=", !!ctx.sidebarRightTabs, "sidebarRight=", !!ctx.sidebarRight, "slots=", !!ctx.slots);
+      // 会话头部胶囊按钮：点「Muteki 蜂群」旁的「工作台」胶囊 → 右侧栏弹工作台。
+      // 契约对照 helmd：conversation.session.header.actions slot，独立 id 不shadow官方预设标签；
+      // 非 muteki 预设的会话返回 null，绝不干扰其它预设。
+      // **必须定义在 apply 内**：open 闭包引用 ctx（apply 的参数），放外面会 ReferenceError。
+      function WorkbenchCapsule(props) {
+        // 宿主 header slot 传的是 useSessions hook + sessionId，不是 preset 字段
+        // （对照 helmd：projectionValues.agentPreset 才是预设 id）。
+        var preset = props.useSessions ? props.useSessions(function (state) {
+          var s = state.byId && state.byId[props.sessionId];
+          var val = s && s.projectionValues && s.projectionValues.agentPreset;
+          return typeof val === "string" ? val : undefined;
+        }) : undefined;
+        if (preset === undefined || preset !== "muteki") return null;
+        function open(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var sid = props.sessionId;
+          if (ctx.sidebarRight) {
+            if (sid && typeof ctx.sidebarRight.openTabIn === "function") {
+              try { ctx.sidebarRight.openTabIn(sid, "muteki"); } catch (err) { console.error("[muteki-workbench] openTabIn failed:", err); }
+            }
+            if (typeof ctx.sidebarRight.openTab === "function") {
+              try { ctx.sidebarRight.openTab("muteki"); } catch (err) { console.error("[muteki-workbench] openTab failed:", err); }
+            }
+            if (typeof ctx.sidebarRight.isExpanded === "function" && !ctx.sidebarRight.isExpanded()) {
+              try { ctx.sidebarRight.toggleExpanded(); } catch (err) { console.error("[muteki-workbench] toggleExpanded failed:", err); }
+            }
+          } else {
+            console.error("[muteki-workbench] no sidebarRight service");
+          }
+        }
+        return h("button", {
+          onClick: open,
+          title: "打开 Muteki 工作台",
+          style: {
+            display: "inline-flex", alignItems: "center", gap: 4,
+            padding: "1px 9px", marginLeft: 6,
+            border: "1px solid var(--dsw-alias-state-success-primary)",
+            borderRadius: 999, background: "transparent",
+            color: "var(--dsw-alias-state-success-primary)",
+            fontSize: 11, lineHeight: "16px", cursor: "pointer",
+          },
+        }, "工作台");
+      }
       if (ctx.sidebarRightTabs && typeof ctx.sidebarRightTabs.register === "function") {
         ctx.effect(function () {
-          var dispose = ctx.sidebarRightTabs.register({
+          return ctx.sidebarRightTabs.register({
             id: "muteki:workbench",
             kind: "muteki",
             title: function () { return "Muteki 工作台"; },
           });
-          console.info("[muteki-workbench] tab type registered kind=muteki");
-          return dispose;
         }, "muteki-workbench: sidebar tab definition");
       } else {
         console.error("[muteki-workbench] sidebarRightTabs.register unavailable");
