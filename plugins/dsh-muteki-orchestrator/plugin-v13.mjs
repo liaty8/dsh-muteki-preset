@@ -19,7 +19,7 @@
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { spawnSync, execFile } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -170,6 +170,36 @@ export function apply(ctx, config) {
   const subagentLog = join(config.storageDir, "subagents.jsonl");
   mkdirSync(config.storageDir, { recursive: true });
 
+  // ── 工作台运行时覆盖层（settings.json）─────────────────────────────────
+  // muteki-workbench 工作台经 HTTP 写这个文件；优先级高于 patch config，
+  // 改档/改墙在下一次额度判定即生效，不用重启 DSH。省略字段回落 patch config。
+  const SETTINGS_KEYS = [
+    "mode", "tier", "poolSize", "maxRunsPerHour", "burstRuns", "onQuota",
+    "maxWaitMinutes", "stagnationLimit", "maxCostUsdPerHour", "maxRunsPerChallenge",
+    "maxCostUsdPerChallenge", "workerUsdPerMinute", "estimateToActual", "costBasis",
+    "hardCancelOnFlag",
+  ];
+  const settingsFile = join(config.storageDir, "settings.json");
+  let settingsCache = { mtime: -1, value: {} };
+  const settingsOverride = () => {
+    try {
+      const ms = statSync(settingsFile).mtimeMs;
+      if (ms !== settingsCache.mtime) {
+        const raw = JSON.parse(readFileSync(settingsFile, "utf8"));
+        const value = {};
+        for (const key of SETTINGS_KEYS) {
+          if (raw && raw[key] !== undefined && raw[key] !== null) value[key] = raw[key];
+        }
+        settingsCache = { mtime: ms, value };
+      }
+    } catch (err) {
+      // 文件被删=收回覆盖；读坏=沿用上一次已知好的值
+      if (err && err.code === "ENOENT") settingsCache = { mtime: -1, value: {} };
+    }
+    return settingsCache.value;
+  };
+  const cfg = () => ({ ...config, ...settingsOverride() });
+
   const readRuns = () => {
     try {
       const parsed = JSON.parse(readFileSync(runsFile, "utf8"));
@@ -219,16 +249,16 @@ export function apply(ctx, config) {
   const recentCosts = (challenge) =>
     readCosts().filter((x) => Date.now() - x.ts < HOUR && x.challenge === (challenge ?? ""));
   const estimateToActual = () => {
-    const value = Number(config.estimateToActual);
+    const value = Number(cfg().estimateToActual);
     return Number.isFinite(value) && value > 0 ? value : 0.1;
   };
-  const costField = () => (config.costBasis === "actual" ? "usdActual" : "usdEstimate");
+  const costField = () => (cfg().costBasis === "actual" ? "usdActual" : "usdEstimate");
   const entryUsd = (row) => {
     const direct = Number(row?.[costField()]);
     if (Number.isFinite(direct) && direct > 0) return direct;
     const legacy = Number(row?.usd);
     if (!Number.isFinite(legacy) || legacy <= 0) return 0;
-    return config.costBasis === "actual" ? legacy * estimateToActual() : legacy;
+    return cfg().costBasis === "actual" ? legacy * estimateToActual() : legacy;
   };
   const totalCost = (challenge) =>
     recentCosts(challenge).reduce((sum, x) => sum + entryUsd(x), 0);
@@ -316,7 +346,7 @@ export function apply(ctx, config) {
     }
   };
   const bucketFor = (challenge) => {
-    const limits = resolveLimits(config);
+    const limits = resolveLimits(cfg());
     const row = readBuckets()[challenge ?? ""] || {};
     const capacity = limits.burstRuns;
     const stored =
@@ -356,12 +386,12 @@ export function apply(ctx, config) {
 
   /** 统一额度判定：dispatch / tick / run / cli 四个闸门都用它，避免口径分叉。 */
   const quotaState = (challenge) => {
-    const limits = resolveLimits(config);
+    const limits = resolveLimits(cfg());
     const bucket = bucketFor(challenge);
     const runsHour = recentRuns(challenge).length;
     const costHour = totalCost(challenge);
     const totals = totalsFor(challenge);
-    const costTotal = config.costBasis === "actual" ? totals.usdActual : totals.usdEstimate;
+    const costTotal = cfg().costBasis === "actual" ? totals.usdActual : totals.usdEstimate;
     const hits = [];
     if (bucket.tokens < 1) {
       hits.push({
@@ -394,7 +424,7 @@ export function apply(ctx, config) {
 
   const quotaSummary = (state) => ({
     mode: state.limits.mode,
-    costBasis: config.costBasis === "actual" ? "actual" : "estimate",
+    costBasis: cfg().costBasis === "actual" ? "actual" : "estimate",
     tokens: Number(state.bucket.tokens.toFixed(2)),
     burstRuns: state.bucket.capacity,
     runsPerHour: state.limits.runsPerHour,
@@ -613,7 +643,7 @@ export function apply(ctx, config) {
       recordCost(usage.costUsd, "dsh-subagent", challenge, { basis: "actual", ms });
       return;
     }
-    const perMinute = Number(config.workerUsdPerMinute);
+    const perMinute = Number(cfg().workerUsdPerMinute);
     const rate = Number.isFinite(perMinute) && perMinute >= 0 ? perMinute : 0.1;
     const tokens =
       usage.inputTokens || usage.outputTokens
@@ -803,7 +833,7 @@ ${contextText}
    *  不等整批最慢者。flag 按「派单时 baseline 差集」归属到题，不做全局首解 cancel；
    *  停滞熔断关闭；worker 没标 done 的任务最多重试一次，再失败就 drop。 */
   const runBulk = async (args, exec, parent, cwd, challenge, started) => {
-    const limits = resolveLimits(config);
+    const limits = resolveLimits(cfg());
     const poolSize = Math.max(1, Math.min(16, args.limit ?? limits.poolSize));
     const maxMs = Math.max(1, Math.min(120, args.max_minutes ?? 120)) * 60_000;
     const pool = new Map();
@@ -1303,7 +1333,7 @@ ${contextText}
         throw new Error(`切换题名 ${challenge} 失败：${used.out.slice(0, 200)}`);
       }
       // bulk（靶场批量）：完成驱动并发池，与单题攻坚的轮同步循环是两条路径。
-      if (resolveLimits(config).mode === "bulk") {
+      if (resolveLimits(cfg()).mode === "bulk") {
         return await runBulk(args, exec, parent, cwd, challenge, started);
       }
       const baseline = new Set(knownFlags(cwd).map(flagValue));
@@ -1317,7 +1347,7 @@ ${contextText}
       let overridden = false;
       let overrideNote = "";
       let overrideRequested = false;
-      const limits = resolveLimits(config);
+      const limits = resolveLimits(cfg());
       let progress = progressSnapshot(cwd);
       let stagnantRounds = 0;
 
@@ -1405,7 +1435,7 @@ ${contextText}
           flagPromise.then((hit) => (hit ? "flag" : "done")),
         ]);
         if (winner === "flag") {
-          if (config.hardCancelOnFlag !== false) {
+          if (cfg().hardCancelOnFlag !== false) {
             for (const item of batch) {
               try {
                 subagents.interrupt(item.activation.childId, { kind: "ancestor", agent: parent });

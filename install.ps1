@@ -81,6 +81,38 @@ Copy-Item (Join-Path $root "plugins\dsh-muteki-orchestrator\plugin-v13.mjs") (Jo
 Copy-Item (Join-Path $root "plugins\muteki-core\muteki-core.mjs") (Join-Path $profileDir "muteki-core.mjs") -Force
 Write-Host "[2/4] 插件已安装：$profileDir\muteki-orchestrator.mjs"
 
+# 2b) 工作台小包：profile 根目录放包 + junction 进 node_modules + 声明 file: 依赖。
+#     包带 dsh.bundle / dsh.client 声明，pnpm install 不会移走；右侧栏 UI 与设置路由由此生效。
+$wbSrc = Join-Path $root "plugins\muteki-workbench"
+$wbDst = Join-Path $profileDir "muteki-workbench-pkg"
+if (Test-Path (Join-Path $wbDst "package.json")) {
+  $wbName = (Get-Content (Join-Path $wbDst "package.json") -Raw | ConvertFrom-Json).name
+  if ($wbName -ne "muteki-workbench") {
+    Write-Host "[2b/4] 跳过：$wbDst 已被其它包占用（name=$wbName）" -ForegroundColor Yellow
+    $wbDst = $null
+  }
+}
+if ($wbDst) {
+  if (Test-Path $wbDst) { Remove-Item $wbDst -Recurse -Force }
+  Copy-Item $wbSrc $wbDst -Recurse -Force
+  $wbLink = Join-Path $profileDir "node_modules\muteki-workbench"
+  if (-not (Test-Path $wbLink)) {
+    New-Item -ItemType Junction -Path $wbLink -Target $wbDst | Out-Null
+  }
+  $pkgPath = Join-Path $profileDir "package.json"
+  if (Test-Path $pkgPath) {
+    $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+    if (-not $pkg.dependencies) {
+      $pkg | Add-Member -NotePropertyName dependencies -NotePropertyValue ([ordered]@{})
+    }
+    if ($pkg.dependencies.PSObject.Properties.Name -notcontains "muteki-workbench") {
+      $pkg.dependencies | Add-Member -NotePropertyName "muteki-workbench" -NotePropertyValue "file:./muteki-workbench-pkg"
+      $pkg | ConvertTo-Json -Depth 20 | Set-Content $pkgPath -Encoding UTF8
+    }
+  }
+  Write-Host "[2b/4] 工作台已安装：$wbDst（junction + file: 依赖；重启 DSH 后右侧栏出现「Muteki 工作台」）"
+}
+
 # 3) 生成片段
 $tpl = Get-Content (Join-Path $root "preset\preset-muteki.patch.yml") -Raw
 $tpl = $tpl.Replace("{{PYTHON}}", $Python)

@@ -1,0 +1,27 @@
+{
+  "name": "muteki-workbench",
+  "version": "1.0.0",
+  "description": "Muteki 工作台：右侧栏滑杆调 mode/tier/并发/成本墙（运行时生效），派单自动打开子代理实时 pane",
+  "type": "module",
+  "main": "server.mjs",
+  "exports": {
+    ".": "./server.mjs",
+    "./server": "./server.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": ["./cordis.patch.yml"]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-subagent"
+      ]
+    }
+  },
+  "keywords": ["dsh", "dsh-plugin", "muteki", "ctf", "workbench"]
+}

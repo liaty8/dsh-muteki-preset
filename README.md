@@ -285,7 +285,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 1. 把 `board.py` + `SKILL.md`（替换成你的真实路径）装到 `$DSH_HOME\skills\muteki-board\`；
 2. 把 `plugin-v13.mjs` 复制成 `<profile>\muteki-orchestrator.mjs`（**放 profile 根目录，不进 `node_modules`**，pnpm 不会移走它，插件页也不会误报「未生效」）；
 3. 把 `muteki-core.mjs` 放到 `<profile>\`；
-4. 生成 `preset-muteki.patch.yml`（已替换路径），**默认只输出文件**，并提示你把它追加到 profile 的 `cordis.patch.yml`。
+4. 装 `muteki-workbench` 工作台小包（`<profile>\muteki-workbench-pkg\` + junction + `file:` 依赖声明），重启后右侧栏出现「Muteki 工作台」页签；
+5. 生成 `preset-muteki.patch.yml`（已替换路径），**默认只输出文件**，并提示你把它追加到 profile 的 `cordis.patch.yml`。
 
 想让它自动追加：
 
@@ -354,6 +355,17 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 - 配置文件用 UTF-8 **无 BOM** 写入（BOM 会让 JSON 解析失败）；`board.py` 读取时用 `utf-8-sig`，即使有 BOM 也容忍。
 - 配置缺失或损坏时静默回退到内置默认，不会让黑板命令崩掉。
 - 可用 `MUTEKI_CONFIG` 指向别的配置文件（多套安装 / 测试隔离时有用）。
+
+### 工作台（右侧栏滑杆，可选）
+
+安装后重启 DSH，右侧栏出现「Muteki 工作台」页签（`muteki-workbench` 小包，形态参照 helmd 工作台）：
+
+- 滑杆/数字输入调 `mode` / `tier` / 并发池 / 令牌回填与桶容量 / 每小时与整题成本墙 / 停滞熔断轮数；**空值=跟随 patch/mode 预设**。
+- **保存即生效，不用重启**：覆盖写进 `storageDir/settings.json`，orchestrator 下一次额度判定读取（优先级高于 patch）；删文件即收回。
+- **派单自动打开子代理实时对话 pane**（默认开、可关、最多 8 个）——宿主默认要点顶部子代理目录才开 pane，工作台补上「派单即见」。
+- 账本快照：按题显示派单次数 / 估算成本 / 剩余令牌。
+
+不想用 UI 时直接编辑 `settings.json` 或删除它即可，行为与无工作台时一致。细节见 `plugins/muteki-workbench/README.md`。
 
 ---
 

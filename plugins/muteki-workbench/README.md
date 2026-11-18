@@ -1,0 +1,41 @@
+# muteki-workbench（Muteki 工作台）
+
+右侧栏滑杆工作台，参照 helmd 工作台的形态做的**独立小包**：不动已验证的 orchestrator 挂载，
+只加一层「运行时覆盖 + UI」。
+
+## 能力
+
+- **右侧栏页签「Muteki 工作台」**：mode（attended/unattended/bulk）、tier（lite/standard/max）、
+  并发池、令牌回填/桶容量、每小时/整题成本墙、停滞熔断轮数，滑杆+数字输入；空值=跟随 patch/mode 预设。
+- **保存即生效，不用重启 DSH**：覆盖写进 `storageDir/settings.json`，orchestrator 在下一次额度判定读取
+  （优先级高于 patch config；删文件=收回覆盖）。
+- **派单自动打开子代理实时对话 pane**（可关，默认开，最多 8 个）：宿主默认要点顶部子代理目录才开 pane，
+  这里监听 `subagentCatalog` 新增条目自动 `openResource`，补上「派单即见」的体验。
+- **账本快照**：按题显示派单次数/估算成本/剩余令牌，5 秒轮询。
+
+## 结构
+
+| 文件 | 作用 |
+|---|---|
+| `server.mjs` | `ctx.webServer.register` 挂 `/api/muteki/settings`（GET/POST，白名单过滤）与 `/api/muteki/ledger` |
+| `client.js` | 浏览器半：`sidebarRightTabs.register` + `sidebar.right.pane.tab` slot 注册页签；自动开 pane 监听 |
+| `cordis.patch.yml` | 包自带 bundle patch：自挂服务端插件（`enabled` 可关） |
+| `package.json` | `dsh.bundle.patch` + `dsh.client`（platform web，inject sidebar-right / subagent UI） |
+
+storageDir 解析顺序：插件 config.storageDir → `~/.dsh-muteki/config.json` 的 `storage_dir` → 默认 artifacts 目录。
+headless（无 webServer）时服务端静默不注册，不影响做题。
+
+## 安装
+
+`install.ps1` 会自动：包复制到 `<profile>/muteki-workbench-pkg/`、junction 到
+`node_modules/muteki-workbench`、在 profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖
+（有声明 pnpm install 才不会移走）。重启 DSH 后右侧栏出现页签。
+
+手动装：同上三步，或把本目录作为 file: 依赖加入 profile package.json 后 `pnpm install`。
+
+## 边界
+
+- 覆盖层只认白名单键（与 orchestrator `SETTINGS_KEYS` 一致），未知键丢弃；坏 JSON body 返回 400。
+- 自动开 pane 依赖宿主 `subagentCatalog` projection 与 `subagentchat` resource provider
+  （`dsh-client-ui-subagent`）；宿主缺该包时只损失自动开 pane，工作台其余功能不受影响。
+- 服务端路由仅本机 web 平面可达（与 helmd 同契约），不对外监听。

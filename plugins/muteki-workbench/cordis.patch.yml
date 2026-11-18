@@ -1,0 +1,5 @@
+- insert:
+    - id: muteki-workbench
+      name: muteki-workbench
+      config:
+        enabled: true

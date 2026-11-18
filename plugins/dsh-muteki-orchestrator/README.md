@@ -63,6 +63,10 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 
 四个额度字段**省略即用 mode 预设**，显式写出的值优先（老配置里写死的 `12` / `3` 仍然被尊重，不会被预设悄悄改掉）。
 
+**运行时覆盖层**：`storageDir/settings.json`（由 muteki-workbench 工作台写入）优先级**高于** patch config，
+下一次额度判定即生效、不用重启 DSH；白名单键与配置字段同名（另含 `tier`/`poolSize`/`autoOpenPane`），
+删除文件即收回覆盖。没装工作台时该文件不存在，行为与从前完全一致。
+
 ## bulk 靶场批量模式
 
 单题攻坚的形状（每轮 ≤3 个 worker、等整批最慢者、全局首解 cancel、停滞熔断）打**几十上百道独立题**的靶场是错的形状：编排轮次多、席位空转、第一个 flag 就把整批停掉。`mode: bulk` 换一条路径：
