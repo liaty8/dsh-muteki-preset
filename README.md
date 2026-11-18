@@ -360,11 +360,18 @@ Copy-Item .\plugins\muteki-core\muteki-core.mjs "$p\muteki-core.mjs" -Force
 
 安装后重启 DSH，点会话头部「Muteki 蜂群」旁的「工作台」胶囊（或右侧栏页签）打开 `muteki-workbench` 工作台：
 
-- **档位按钮而非滑杆**：「稳妥 / 推荐 / 全力」一键套用推荐值（默认推荐），模式为卡片按钮；选中实心强调色、未选中暗底；悬浮白字提示解释每个按钮。数字微调/口径/汇率在「高级」折叠里。
+![Muteki 蜂群工作台](assets/workbench.png)
+
+- **模式 × 档位两个维度**：运行模式（人主导 / 无人值守 / 靶场批量）决定派单形状；强度档位（稳妥 / 推荐 / 全力）决定并发与额度。**点档位即自动切到靶场批量**并套用该档推荐值（tier `lite/standard/max`），不会留下「选了档位却仍跑 attended」的错位；首开默认人主导 + 跟随预设，推荐档仅以 badge 标示。
+- **档位按钮而非滑杆**：选中实心强调色、未选中暗底；悬浮白字提示解释每个按钮。非批量却带数字覆盖时显示琥珀提示（并发池不启用、数字仅作额度覆盖）。数字微调 / 口径 / 汇率在「高级」折叠里。
 - **计价默认人民币**（DSH/DeepSeek 按 CNY 计费），可一键切 $；推荐档按 DeepSeek 实际口径标定，量级真实；旁常驻「价格预算仅为估算，不代表实际使用」。
-- **保存即生效，不用重启**：覆盖写进 `storageDir/settings.json`，orchestrator 下一次额度判定读取（优先级高于 patch）；删文件即收回。渐变保存按钮有改动才亮、成功闪绿。
+- **保存即生效，不用重启**：覆盖写进 `storageDir/settings.json`，orchestrator 下一次额度判定读取（优先级高于 patch）；删文件即收回。渐变保存按钮有改动才亮、成功闪绿；保存栏固定底部、不遮挡内容。
 - **派单自动打开子代理实时对话 pane**（默认开、可关、最多 8 个）。
 - 账本快照：按题显示派单次数 / DeepSeek 估算成本 / 剩余令牌。
+
+在 DSH 右侧栏中的实际样子（靶场批量 + 稳妥档）：
+
+![工作台在 DSH 右侧栏](assets/workbench-dsh.png)
 
 不想用 UI 时直接编辑 `settings.json` 或删除它即可，行为与无工作台时一致。细节见 `plugins/muteki-workbench/README.md`。
 
@@ -557,7 +564,7 @@ DSH_NODE_MODULES=<你的 DSH home>/profiles/desktop/node_modules \
 本项目是纯源码预设，没有可编译产物，Source code 压缩包就是完整发行物。下载后核对：
 
 ```powershell
-Get-FileHash .\v1.10.1.zip -Algorithm SHA256   # 与 SHA256SUMS.txt 对应行比对
+Get-FileHash .\v1.11.0.zip -Algorithm SHA256   # 与 SHA256SUMS.txt 对应行比对
 ```
 
 ---

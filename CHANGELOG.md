@@ -10,6 +10,34 @@
 
 ---
 
+## [1.11.0] - 2026-11-18
+
+靶场批量模式 + 独立工作台小包 + 运行时覆盖层，一批合并带出；附工作台界面截图（`assets/workbench.png`、`assets/workbench-dsh.png`）。
+
+### Added
+
+- **`mode: bulk`（靶场批量）**：完成驱动并发池，一次打几十上百道独立题。tier `lite/standard/max` = 池 4/8/16，令牌回填与成本墙随档放宽；任一 worker 结束立刻补位（不等整批）；flag 按题归属、不做全局首解 cancel、无停滞熔断；没标 done 的任务重试一次后 drop。整批共用一个 challenge、一题一条 task。返回 `bulk{poolSize,peakPool,solved,dropped}`。
+- **`muteki-workbench` 工作台小包**（独立 bundle，进 `dsh.profile.bundles` 白名单）：会话头部「工作台」胶囊 + 右侧栏页签。档位按钮式 UI（稳妥/推荐/全力）、模式卡片、人民币默认与 $ 切换、DeepSeek 实际口径标定、估算免责声明、白字悬浮提示、渐变保存按钮、账本快照、派单自动开子代理实时 pane（最多 8 个）。
+- **运行时覆盖层**：工作台保存写 `storageDir/settings.json`，orchestrator 每次额度判定读取（mtime 缓存、优先级高于 patch、数字字符串容错 coerce）；**保存即生效、不用重启**，删文件即收回。服务端 `/api/muteki/settings`（白名单 + coerce）与 `/api/muteki/ledger` 走 `ctx.inject(["webServer"])` 注册。
+- **attended 返回体新增生效 `limit`**（clamp 1-3），避免把「多轮累计派发数」误读成「同时并行数」。
+
+### Fixed
+
+- **工作台「选档位却仍跑 attended」的静默错位**：旧版档位按钮只写数字、不写 mode/tier，保存推荐档后 mode 仍是 attended，bulk 路径根本不触发；首开默认也预填推荐数字 + mode 跟随，踩同一个坑。现在**点档位即写入 `mode=bulk` + `tier`（safe/rec/full → lite/standard/max）+ 推荐数字**；切回人主导/无人值守自动清 tier；首开默认人主导 + 跟随预设（推荐仅 badge 标示）；非批量却带数字覆盖时显示琥珀提示「并发池不启用、数字仅作额度覆盖」。
+- **bulk worker 误试 `board.py observation` 子命令**（验证轮发现，argparse invalid choice 浪费一轮）：bulk 提示词补明「黑板没有 observation 子命令，记观察用不带 --artifact 的 fact」。
+
+### Changed
+
+- 工作台计价默认 **CNY**（汇率 7.2 可调），推荐档成本墙按 DeepSeek 实际口径（usdActual ≈ 估算×0.1）标定，量级真实；旁常驻「价格预算仅为估算，不代表实际使用」。其它模型消耗不做逐模型计价，保持原样。
+- 保存栏改底部固定 + 内容区独立滚动（不再遮挡账本）；窄侧栏 320/360/400 宽 auto-fit 网格 + 行内换行，无横向溢出。
+
+### Tests
+
+- 新增 bulk 回归（tier 额度、完成驱动补池时序、flag 按题归属不全局停摆、重试一次后 drop、提示词隔离共享 flag）与工作台回归（白名单/coerce/400/ledger/enabled/无 web/晚到 web inject、settings 覆盖运行时生效删除即收回、attended limit=8→3/轮×3 轮=8 派发）。
+- 全量：Python unittest 147 + orchestrator node:test 55 + workbench node:test 8 全绿。
+
+---
+
 ## [1.10.1] - 2026-11-17
 
 DSH 只读审查反馈的一批问题合并处理，并带出上一轮未发版的用法小修（commit `daf371f`）。

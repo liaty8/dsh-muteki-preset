@@ -814,7 +814,7 @@ ${contextText}
    - 实测排除的方向：\`{{PYTHON}} {{BOARD}} deadend "<原因>" --tested "<测试范围>" --observed "<实际结果>"\`
    - 本题 flag：\`{{PYTHON}} {{BOARD}} flag "<值>" --source "<来源>"\`
    - 完成后：\`{{PYTHON}} {{BOARD}} task done ${task.id}\`（id 写数字或带前缀都行）
-3. 不写没有证据的"事实"；不确定的内容省略 --artifact（会记为 observation）。
+3. 不写没有证据的"事实"；不确定的内容省略 --artifact（会记为 observation）。黑板**没有 \`observation\` 子命令**：记观察一律用不带 \`--artifact\` 的 \`fact\`，不要试 \`board.py observation\`（会 argparse 报错浪费一轮）。
 4. 打出本题 flag 后写回并 task done，立即结束，不要续做别的任务。`);
 
   /** 认领并派发一个任务；返回 activation 或 null（认领失败）。 */
