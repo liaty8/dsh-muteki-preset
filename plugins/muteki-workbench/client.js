@@ -157,6 +157,45 @@ window.__ModuleLoader__.load({
       return h("span", null, "Muteki 工作台");
     }
 
+    // 会话头部胶囊按钮：点「Muteki 蜂群」旁的「工作台」胶囊 → 右侧栏弹工作台。
+    // 契约对照 helmd：conversation.session.header.actions slot，独立 id 不shadow官方预设标签；
+    // 非 muteki 预设的会话返回 null，绝不干扰其它预设。
+    function WorkbenchCapsule(props) {
+      if (props.preset === undefined || props.preset !== "muteki") return null;
+      function open(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var expandBtn = document.querySelector("[data-sidebar-right-expand]") ||
+          document.querySelector('button[aria-label="打开右侧边栏"]') ||
+          document.querySelector('button[aria-label="Open right sidebar"]');
+        if (expandBtn) { try { expandBtn.click(); } catch (err) { /* 展开按钮不在就算了 */ } }
+        var sid = props.sessionId;
+        if (ctx.sidebarRight) {
+          if (sid && typeof ctx.sidebarRight.openTabIn === "function") {
+            try { ctx.sidebarRight.openTabIn(sid, "muteki"); } catch (err) { /* 回落 openTab */ }
+          }
+          if (typeof ctx.sidebarRight.openTab === "function") {
+            try { ctx.sidebarRight.openTab("muteki"); } catch (err) { /* 宿主无此面 */ }
+          }
+          if (typeof ctx.sidebarRight.isExpanded === "function" && !ctx.sidebarRight.isExpanded()) {
+            try { ctx.sidebarRight.toggleExpanded(); } catch (err) { /* 同上 */ }
+          }
+        }
+      }
+      return h("button", {
+        onClick: open,
+        title: "打开 Muteki 工作台",
+        style: {
+          display: "inline-flex", alignItems: "center", gap: 4,
+          padding: "1px 9px", marginLeft: 6,
+          border: "1px solid var(--dsw-alias-state-success-primary)",
+          borderRadius: 999, background: "transparent",
+          color: "var(--dsw-alias-state-success-primary)",
+          fontSize: 11, lineHeight: "16px", cursor: "pointer",
+        },
+      }, "工作台");
+    }
+
     exports.apply = function (ctx) {
       if (ctx.sidebarRightTabs && typeof ctx.sidebarRightTabs.register === "function") {
         ctx.effect(function () {
@@ -174,6 +213,13 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("sidebar.right.pane.tab.title", function* () {
         yield ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: "muteki:workbench" }, TabTitle);
         yield ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: "muteki" }, TabTitle);
+      });
+      ctx.slots.inject("conversation.session.header.actions", function* () {
+        yield ctx.slots.register({
+          name: "conversation.session.header.actions",
+          id: "muteki:workbench",
+          order: -9,
+        }, WorkbenchCapsule);
       });
 
       // 派单自动开实时 pane：宿主默认要点目录才开，这里补上「派单即开」。

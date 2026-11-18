@@ -14,7 +14,9 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHarness, findNodeModules, SKIP_REASON, writeJson } from "./orchestrator_harness.mjs";
 
 const NODE_MODULES = findNodeModules();
-const SERVER_SRC = fileURLToPath(new URL("../plugins/muteki-workbench/server.mjs", import.meta.url));
+const SERVER_SRC = process.env.MUTEKI_TEST_SERVER
+  ? process.env.MUTEKI_TEST_SERVER
+  : fileURLToPath(new URL("../plugins/muteki-workbench/server.mjs", import.meta.url));
 
 async function withServer(options, fn) {
   const root = join(tmpdir(), `muteki-wb-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -28,7 +30,17 @@ async function withServer(options, fn) {
   const mod = await import(pathToFileURL(join(root, "server.mjs")).href);
   const routes = new Map();
   const ctx = options?.noWeb ? {} : { webServer: { register: (r) => routes.set(r.path, r) } };
+  let pendingInject = null;
+  ctx.inject = (_deps, fn) => {
+    if (options?.lateWeb) pendingInject = fn;
+    else fn(ctx);
+  };
   mod.apply(ctx, { enabled: true, storageDir, ...(options?.config || {}) });
+  if (options?.lateWeb) {
+    // 模拟 web 平面服务晚于插件 apply 才就绪
+    ctx.webServer = { register: (r) => routes.set(r.path, r) };
+    pendingInject(ctx);
+  }
   const call = async (path, method = "GET", body) => {
     const route = routes.get(path);
     assert.ok(route, `路由未注册：${path}`);
@@ -89,6 +101,14 @@ test("workbench: enabled=false 或无 webServer 时不注册不炸", { skip: SKI
   });
   await withServer({ noWeb: true }, async (s) => {
     assert.equal(s.routes.size, 0);
+  });
+});
+
+test("workbench: webServer 晚到也能注册（inject 等就绪，不静默丢路由）", { skip: SKIP_REASON }, async () => {
+  await withServer({ lateWeb: true }, async (s) => {
+    assert.ok(s.routes.has("/api/muteki/settings"));
+    const get = await s.call("/api/muteki/settings");
+    assert.equal(get.status, 200);
   });
 });
 
