@@ -10,6 +10,20 @@
 
 ---
 
+## [1.11.1] - 2026-11-19
+
+市场维护者复核指出的本机路由暴露面修复（awesome-dsh-plugin#16667 合并后反馈）。
+
+### Fixed
+
+- **工作台 HTTP 路由缺 DSH 访问检查**：`/api/muteki/settings` 与 `/api/muteki/ledger` 原先任何浏览器打开的网页都能请求。现在每个 handler 先走 `connection.requestRejection(req)`（Host/Origin 围栏防 DNS rebinding / 跨站调用 + 浏览器登录态），被拒返回 401/403 且不触达任何读写；`inject` 声明 `["webServer","connection"]`（与 dsh-host-open-in-app / dsh-experimental-inspector 同款）。无 connection 的旧宿主 / headless 优雅降级。
+
+### Tests
+
+- 新增三条安全回归：connection 拒绝→403 且不写 settings；connection 放行→照常读写；无 connection→不炸。workbench node:test 11 全绿。
+
+---
+
 ## [1.11.0] - 2026-11-18
 
 靶场批量模式 + 独立工作台小包 + 运行时覆盖层，一批合并带出；附工作台界面截图（`assets/workbench.png`、`assets/workbench-dsh.png`）。

@@ -384,6 +384,7 @@ profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、把 `muteki
 - **保存即生效，不用重启**：覆盖写进 `storageDir/settings.json`，orchestrator 下一次额度判定读取（优先级高于 patch）；删文件即收回。渐变保存按钮有改动才亮、成功闪绿；保存栏固定底部、不遮挡内容。
 - **派单自动打开子代理实时对话 pane**（默认开、可关、最多 8 个）。
 - 账本快照：按题显示派单次数 / DeepSeek 估算成本 / 剩余令牌。
+- **路由有访问检查**：设置 / 账本两个本机路由先过 DSH `connection.requestRejection`（Host/Origin 围栏 + 浏览器登录态），别的网页调用会被 401/403 挡掉，不触达读写。
 
 在 DSH 右侧栏中的实际样子（靶场批量 + 稳妥档）：
 
@@ -580,7 +581,7 @@ DSH_NODE_MODULES=<你的 DSH home>/profiles/desktop/node_modules \
 本项目是纯源码预设，没有可编译产物，Source code 压缩包就是完整发行物。下载后核对：
 
 ```powershell
-Get-FileHash .\v1.11.0.zip -Algorithm SHA256   # 与 SHA256SUMS.txt 对应行比对
+Get-FileHash .\v1.11.1.zip -Algorithm SHA256   # 与 SHA256SUMS.txt 对应行比对
 ```
 
 ---

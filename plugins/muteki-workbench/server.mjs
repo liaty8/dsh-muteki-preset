@@ -7,6 +7,9 @@
  *
  * 覆盖层文件与 orchestrator 共用 storageDir：优先 config.storageDir，
  * 其次 ~/.dsh-muteki/config.json 的 storage_dir，最后默认 artifacts 目录。
+ *
+ * 安全：每个路由 handler 先走 connection.requestRejection(req)（Host/Origin
+ * 围栏 + 浏览器登录态），被拒返回 401/403 且不触达读写；inject 声明 connection。
  */
 import z from "@deepseek-ai/schemastery";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -17,7 +20,9 @@ export const name = "muteki-workbench";
 
 // cordis 服务必须声明 inject 才能访问；webServer 由 web 平面异步提供，
 // 直接读 ctx.webServer 会拿不到（helmd 同款坑：它用 ctx.inject 等就绪）。
-export const inject = ["webServer"];
+// connection 提供 Host/Origin 围栏 + 浏览器登录态校验（requestRejection），
+// 与 dsh-host-open-in-app / dsh-experimental-inspector 同款注入组合。
+export const inject = ["webServer", "connection"];
 
 export const Config = z.object({
   enabled: z.boolean().default(true),
@@ -95,9 +100,10 @@ export function apply(ctx, config) {
   mkdirSync(storageDir, { recursive: true });
   const settingsFile = join(storageDir, "settings.json");
 
-  ctx.inject(["webServer"], (webCtx) => {
+  ctx.inject(["webServer", "connection"], (webCtx) => {
     const webServer = webCtx.webServer;
     if (!webServer?.register) return; // 无 web 平面（headless）时静默不注册
+    const connection = webCtx.connection;
     const seen = new Set();
     function route(path, handler) {
       if (seen.has(path)) return;
@@ -106,6 +112,14 @@ export function apply(ctx, config) {
         kind: "exact",
         path,
         handler: async (req, res) => {
+          // 安全围栏：先问 connection 是否拒绝（Host/Origin 防 DNS rebinding +
+          // 跨站调用、浏览器登录态）。返回 401/403 时直接结束，不触达任何读写。
+          const rejection = connection?.requestRejection?.(req);
+          if (rejection !== undefined) {
+            res.statusCode = rejection;
+            res.end();
+            return;
+          }
           res.setHeader("content-type", "application/json");
           try {
             const data = await handler(req);

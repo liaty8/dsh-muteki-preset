@@ -32,7 +32,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `server.mjs` | `ctx.inject(["webServer"])` 等服务就绪后 `webServer.register` 挂 `/api/muteki/settings`（GET/POST，白名单过滤）与 `/api/muteki/ledger`。**不能直读 `ctx.webServer`**：cordis 服务未 inject 时拿不到，会静默丢路由（实机 404 的根因） |
+| `server.mjs` | `ctx.inject(["webServer","connection"])` 等服务就绪后 `webServer.register` 挂 `/api/muteki/settings`（GET/POST，白名单过滤）与 `/api/muteki/ledger`；每个 handler 先走 `connection.requestRejection(req)`（Host/Origin 围栏 + 浏览器登录态），被拒 401/403 不触达读写。**不能直读 `ctx.webServer`**：cordis 服务未 inject 时拿不到，会静默丢路由（实机 404 的根因） |
 | `client.js` | 浏览器半：`sidebarRightTabs.register` + `sidebar.right.pane.tab` slot 注册页签；自动开 pane 监听 |
 | `cordis.patch.yml` | 包自带 bundle patch：自挂服务端插件（`enabled` 可关） |
 | `package.json` | `dsh.bundle.patch` + `dsh.client`（platform web，inject sidebar-right / subagent UI） |
@@ -57,4 +57,6 @@ headless（无 webServer）时服务端静默不注册，不影响做题。
 - 覆盖层只认白名单键（与 orchestrator `SETTINGS_KEYS` 一致），未知键丢弃；坏 JSON body 返回 400。
 - 自动开 pane 依赖宿主 `subagentCatalog` projection 与 `subagentchat` resource provider
   （`dsh-client-ui-subagent`）；宿主缺该包时只损失自动开 pane，工作台其余功能不受影响。
-- 服务端路由仅本机 web 平面可达（与 helmd 同契约），不对外监听。
+- 服务端路由仅本机 web 平面可达（与 helmd 同契约），不对外监听；且每个 handler 先过
+  `connection.requestRejection(req)`（Host/Origin 围栏防 DNS rebinding / 跨站调用 + 浏览器登录态），
+  被拒返回 401/403、不触达任何读写。`inject` 声明 `connection`（DSH ≥0.2.2-rc.3 的 web 平面提供）。
