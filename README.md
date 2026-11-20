@@ -391,6 +391,10 @@ profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、把 `muteki
 
 ![工作台在 DSH 右侧栏](assets/workbench-dsh.png)
 
+开启「首解即报」后，顶部横幅即时列出已解出的 flag（不用等主会话收束、不用点子代理）：
+
+![首解即报横幅](assets/workbench-flagalert.png)
+
 不想用 UI 时直接编辑 `settings.json` 或删除它即可，行为与无工作台时一致。细节见 `plugins/muteki-workbench/README.md`。
 
 ---
