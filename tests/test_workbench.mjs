@@ -110,6 +110,33 @@ test("workbench: flags 路由读 flags.jsonl 尾部并倒序（首解即报横�
   });
 });
 
+test("workbench: flags delete 精确删单条、clear 清空、跨域拒绝不动盘", { skip: SKIP_REASON }, async () => {
+  const seed = (s) => writeFileSync(
+    join(s.storageDir, "flags.jsonl"),
+    JSON.stringify({ ts: 1, challenge: "a", value: "flag{1}" }) + "\n" +
+    JSON.stringify({ ts: 2, challenge: "b", value: "flag{2}" }) + "\n",
+    "utf8",
+  );
+  await withServer({}, async (s) => {
+    seed(s);
+    const del = await s.call("/api/muteki/flags/delete", "POST", { ts: 1, challenge: "a", value: "flag{1}" });
+    assert.equal(del.json.data.removed, 1);
+    const get = await s.call("/api/muteki/flags");
+    assert.deepEqual(get.json.data.flags.map((f) => f.value), ["flag{2}"]);
+    const clr = await s.call("/api/muteki/flags/clear", "POST", {});
+    assert.equal(clr.json.data.cleared, true);
+    const get2 = await s.call("/api/muteki/flags");
+    assert.deepEqual(get2.json.data.flags, []);
+  });
+  await withServer({}, async (s) => {
+    seed(s);
+    const before = readFileSync(join(s.storageDir, "flags.jsonl"), "utf8");
+    const r = await rawCall(s, "/api/muteki/flags/delete", "POST", { ts: 1, challenge: "a", value: "flag{1}" }, CROSS);
+    assert.equal(r.statusCode, 403);
+    assert.equal(readFileSync(join(s.storageDir, "flags.jsonl"), "utf8"), before, "跨域删除不应动盘");
+  });
+});
+
 test("workbench: enabled=false 或无 webServer 时不注册不炸", { skip: SKIP_REASON }, async () => {
   await withServer({ config: { enabled: false } }, async (s) => {
     assert.equal(s.routes.size, 0);

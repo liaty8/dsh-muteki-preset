@@ -125,11 +125,21 @@ window.__ModuleLoader__.load({
       ".mw-note{margin-top:8px;font-size:11px;color:var(--amber);display:flex;gap:6px;align-items:flex-start;line-height:1.5}",
       ".mw-note::before{content:'⚠';flex:none}",
       ".mw-flags{margin:0 0 12px;border:1px solid var(--green);border-radius:12px;padding:10px 12px;background:linear-gradient(160deg,rgba(52,211,153,.14),rgba(52,211,153,.04));box-shadow:0 0 0 1px rgba(52,211,153,.25),0 8px 24px -12px var(--green)}",
-      ".mw-flags-h{font:800 11px/1 ui-monospace,monospace;letter-spacing:.08em;color:var(--green);margin-bottom:8px}",
-      ".mw-flag{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;padding:5px 0;border-top:1px dashed rgba(52,211,153,.3)}",
+      ".mw-flags-h{font:800 11px/1 ui-monospace,monospace;letter-spacing:.08em;color:var(--green);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px}",
+      ".mw-flag-clear{cursor:pointer;font:700 10px/1 ui-monospace,monospace;letter-spacing:.06em;color:var(--amber);background:transparent;border:1px solid rgba(251,191,36,.45);border-radius:6px;padding:4px 8px}",
+      ".mw-flag-clear:hover{background:rgba(251,191,36,.14);border-color:var(--amber)}",
+      ".mw-flag{display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-top:1px dashed rgba(52,211,153,.3);overflow:hidden;max-height:120px}",
       ".mw-flag:first-of-type{border-top:0}",
+      ".mw-flag.out{animation:mwFlagOut .28s ease forwards;pointer-events:none}",
+      "@keyframes mwFlagOut{to{opacity:0;transform:translateX(18px);max-height:0;padding-top:0;padding-bottom:0;border-top-width:0}}",
+      ".mw-flag .body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}",
       ".mw-flag .v{font:700 12.5px/1.4 ui-monospace,'Cascadia Code',Consolas,monospace;color:#eafff5;word-break:break-all}",
       ".mw-flag .meta{font-size:10.5px;color:var(--dim)}",
+      ".mw-flag .acts{flex:none;display:flex;gap:6px;align-items:center;padding-top:1px}",
+      ".mw-flag .act{cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--dim);border-radius:6px;padding:2px 8px;font-size:11px;line-height:1.4}",
+      ".mw-flag .act:hover{color:var(--cyan);border-color:var(--cyan)}",
+      ".mw-flag .act.del:hover{color:var(--magenta);border-color:var(--magenta)}",
+      ".mw-flag .act:disabled{opacity:.4;cursor:default}",
       ".mw-tip{position:fixed;z-index:9999;transform:translate(-50%,-100%);pointer-events:none;",
       "background:linear-gradient(160deg,#1a2440,#101828);border:1px solid #22d3ee;border-radius:9px;",
       "color:#ffffff;font-size:11.5px;line-height:1.5;padding:7px 10px;max-width:240px;",
@@ -257,6 +267,12 @@ window.__ModuleLoader__.load({
       var saveState = sv[0], setSaveState = sv[1];
       var fg = React.useState([]);
       var flags = fg[0], setFlags = fg[1];
+      var fr = React.useState(0);
+      var refreshTick = fr[0], setRefreshTick = fr[1];
+      var ck = React.useState("");
+      var copiedKey = ck[0], setCopiedKey = ck[1];
+      var rk = React.useState([]);
+      var removing = rk[0], setRemoving = rk[1];
 
       React.useEffect(function () {
         ensureStyle();
@@ -298,7 +314,64 @@ window.__ModuleLoader__.load({
         pull();
         var t = setInterval(pull, 2000);
         return function () { alive = false; clearInterval(t); };
-      }, [flagAlertOn]);
+      }, [flagAlertOn, refreshTick]);
+
+      // 剪贴板：优先 async clipboard，webview 拒绝时回退 execCommand
+      function copyText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve, reject) {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand("copy") ? resolve() : reject(new Error("copy failed")); }
+          catch (e) { reject(e); }
+          finally { document.body.removeChild(ta); }
+        });
+      }
+      function flagKey(f) { return (f.ts || 0) + "|" + f.value; }
+      function copyFlag(f) {
+        var key = flagKey(f);
+        copyText(f.value).then(function () {
+          setCopiedKey(key);
+          setTimeout(function () { setCopiedKey(function (cur) { return cur === key ? "" : cur; }); }, 1500);
+        }).catch(function () {});
+      }
+      // 删除只动工作台留痕 flags.jsonl，不碰黑板 flag（确认框里写明）。
+      // 先播滑出/收起动画再真正删，避免行瞬间消失的突兀感。
+      function deleteFlag(f) {
+        if (!window.confirm("删除这条旗标留痕？\n" + f.value + "\n仅删工作台留痕（flags.jsonl），不动黑板 flag。")) return;
+        var key = flagKey(f);
+        setRemoving(function (r) { return r.concat([key]); });
+        setTimeout(function () {
+          fetchJson("/api/muteki/flags/delete", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ts: f.ts, challenge: f.challenge, value: f.value }),
+          }).then(function () {
+            setRefreshTick(function (t) { return t + 1; });
+            setRemoving(function (r) { return r.filter(function (k) { return k !== key; }); });
+          }).catch(function () {
+            setRemoving(function (r) { return r.filter(function (k) { return k !== key; }); });
+          });
+        }, 280);
+      }
+      function clearFlags() {
+        if (!window.confirm("删除全部旗标留痕（" + flags.length + " 条）？\n仅删工作台留痕（flags.jsonl），不动黑板 flag。")) return;
+        var keys = flags.map(flagKey);
+        setRemoving(function (r) { return r.concat(keys); });
+        setTimeout(function () {
+          fetchJson("/api/muteki/flags/clear", {
+            method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+          }).then(function () {
+            setRefreshTick(function (t) { return t + 1; });
+            setRemoving([]);
+          }).catch(function () { setRemoving([]); });
+        }, 280);
+      }
 
       if (!draft) return h("div", { className: "mw-root" }, h("div", { className: "mw-empty" }, "正在连接工作台服务…"));
 
@@ -376,11 +449,28 @@ window.__ModuleLoader__.load({
 
         flagAlertOn && flags.length > 0
           ? h("div", { className: "mw-flags" },
-              h("div", { className: "mw-flags-h" }, "🚩 首解即报 · 已解出 " + flags.length + " 题"),
-              flags.map(function (f, i) {
-                return h("div", { className: "mw-flag", key: (f.ts || 0) + "-" + i },
-                  h("span", { className: "v" }, f.value),
-                  h("span", { className: "meta" }, (f.challenge || "") + " · " + (f.ts ? new Date(f.ts).toLocaleTimeString() : "")));
+              h("div", { className: "mw-flags-h" },
+                h("span", null, "🚩 首解即报 · 已解出 " + flags.length + " 题"),
+                h(Tip, { text: "删除全部旗标留痕（仅 flags.jsonl，不动黑板 flag），会先弹确认。" },
+                  h("button", { className: "mw-flag-clear", onClick: clearFlags }, "全部删除"))),
+              flags.map(function (f) {
+                var key = flagKey(f);
+                var out = removing.indexOf(key) >= 0;
+                return h("div", { className: "mw-flag" + (out ? " out" : ""), key: key },
+                  h("div", { className: "body" },
+                    h("span", { className: "v" }, f.value),
+                    h("span", { className: "meta" }, (f.challenge || "") + " · " + (f.ts ? new Date(f.ts).toLocaleTimeString() : ""))),
+                  h("span", { className: "acts" },
+                    h(Tip, { text: "复制 flag 到剪贴板。" },
+                      h("button", {
+                        className: "act", "aria-label": "复制 flag", disabled: out,
+                        onClick: function () { copyFlag(f); },
+                      }, copiedKey === key ? "✓" : "⧉")),
+                    h(Tip, { text: "删除这条旗标留痕（仅 flags.jsonl，不动黑板），会先弹确认。" },
+                      h("button", {
+                        className: "act del", "aria-label": "删除旗标留痕", disabled: out,
+                        onClick: function () { deleteFlag(f); },
+                      }, "🗑"))));
               }))
           : null,
 

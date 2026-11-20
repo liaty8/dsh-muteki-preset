@@ -188,6 +188,38 @@ export function apply(ctx, config) {
       }
       return { flags: flags.reverse() };
     });
+
+    // 删除单条旗标留痕（仅 flags.jsonl，不碰黑板 flag）。按 ts+challenge+value 精确匹配。
+    route("/api/muteki/flags/delete", async (req) => {
+      if (req.method !== "POST") throw Object.assign(new Error("method not allowed"), { status: 405 });
+      const body = await readJsonBody(req);
+      const file = join(storageDir, "flags.jsonl");
+      let lines = [];
+      try {
+        lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
+      } catch {
+        return { removed: 0 };
+      }
+      const kept = [];
+      let removed = 0;
+      for (const line of lines) {
+        let row = null;
+        try { row = JSON.parse(line); } catch { /* 坏行保留原样 */ }
+        const hit = row && row.ts === body.ts && row.value === body.value && (row.challenge || "") === (body.challenge || "");
+        if (hit) removed += 1;
+        else kept.push(line);
+      }
+      writeFileSync(file, kept.length ? kept.join("\n") + "\n" : "", "utf8");
+      return { removed };
+    });
+
+    // 清空全部旗标留痕（仅 flags.jsonl，不碰黑板 flag）。
+    route("/api/muteki/flags/clear", async (req) => {
+      if (req.method !== "POST") throw Object.assign(new Error("method not allowed"), { status: 405 });
+      await readJsonBody(req);
+      writeFileSync(join(storageDir, "flags.jsonl"), "", "utf8");
+      return { cleared: true };
+    });
   });
 }
 
