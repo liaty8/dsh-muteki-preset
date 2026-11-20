@@ -140,6 +140,26 @@ window.__ModuleLoader__.load({
       ".mw-flag .act:hover{color:var(--cyan);border-color:var(--cyan)}",
       ".mw-flag .act.del:hover{color:var(--magenta);border-color:var(--magenta)}",
       ".mw-flag .act:disabled{opacity:.4;cursor:default}",
+      ".mw-modal-mask{position:absolute;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;",
+      "background:rgba(4,8,16,.68);backdrop-filter:blur(3px);animation:mwFade .16s ease}",
+      ".mw-modal{width:min(320px,100%);background:linear-gradient(165deg,var(--overlay),var(--surface));border:1px solid rgba(232,121,249,.4);",
+      "border-radius:16px;padding:20px 18px 16px;text-align:center;box-shadow:0 0 0 1px rgba(232,121,249,.15),0 24px 60px -18px rgba(232,121,249,.45),0 8px 30px -12px #000;",
+      "animation:mwPop .2s cubic-bezier(.2,.9,.3,1.2)}",
+      ".mw-modal-warn{width:46px;height:46px;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:24px;",
+      "color:var(--amber);background:radial-gradient(circle at 50% 35%,rgba(251,191,36,.28),rgba(251,191,36,.08));border:1px solid rgba(251,191,36,.5);border-radius:50%;",
+      "box-shadow:0 0 18px -2px rgba(251,191,36,.5);text-shadow:0 0 10px rgba(251,191,36,.8)}",
+      ".mw-modal-title{font-weight:800;font-size:14.5px;color:var(--text);margin-bottom:8px}",
+      ".mw-modal-value{font:700 12px/1.5 ui-monospace,'Cascadia Code',Consolas,monospace;color:var(--magenta);word-break:break-all;",
+      "background:rgba(232,121,249,.08);border:1px dashed rgba(232,121,249,.35);border-radius:8px;padding:6px 8px;margin-bottom:8px}",
+      ".mw-modal-note{font-size:11px;color:var(--dim);margin-bottom:14px}",
+      ".mw-modal-acts{display:flex;gap:10px}",
+      ".mw-modal-cancel{flex:1;cursor:pointer;padding:9px 0;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--dim);font-weight:700;font-size:12.5px}",
+      ".mw-modal-cancel:hover{color:var(--text);border-color:var(--dim)}",
+      ".mw-modal-danger{flex:1;cursor:pointer;padding:9px 0;border-radius:10px;border:none;color:#fff;font-weight:800;font-size:12.5px;",
+      "background:linear-gradient(135deg,var(--red),var(--magenta));box-shadow:0 8px 22px -8px var(--magenta)}",
+      ".mw-modal-danger:hover{filter:brightness(1.12);transform:translateY(-1px)}",
+      "@keyframes mwFade{from{opacity:0}to{opacity:1}}",
+      "@keyframes mwPop{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}",
       ".mw-tip{position:fixed;z-index:9999;transform:translate(-50%,-100%);pointer-events:none;",
       "background:linear-gradient(160deg,#1a2440,#101828);border:1px solid #22d3ee;border-radius:9px;",
       "color:#ffffff;font-size:11.5px;line-height:1.5;padding:7px 10px;max-width:240px;",
@@ -273,6 +293,8 @@ window.__ModuleLoader__.load({
       var copiedKey = ck[0], setCopiedKey = ck[1];
       var rk = React.useState([]);
       var removing = rk[0], setRemoving = rk[1];
+      var cf = React.useState(null);
+      var confirmReq = cf[0], setConfirmReq = cf[1];
 
       React.useEffect(function () {
         ensureStyle();
@@ -341,10 +363,9 @@ window.__ModuleLoader__.load({
           setTimeout(function () { setCopiedKey(function (cur) { return cur === key ? "" : cur; }); }, 1500);
         }).catch(function () {});
       }
-      // 删除只动工作台留痕 flags.jsonl，不碰黑板 flag（确认框里写明）。
+      // 删除只动工作台留痕 flags.jsonl，不碰黑板 flag（确认模态里写明）。
       // 先播滑出/收起动画再真正删，避免行瞬间消失的突兀感。
-      function deleteFlag(f) {
-        if (!window.confirm("删除这条旗标留痕？\n" + f.value + "\n仅删工作台留痕（flags.jsonl），不动黑板 flag。")) return;
+      function doDelete(f) {
         var key = flagKey(f);
         setRemoving(function (r) { return r.concat([key]); });
         setTimeout(function () {
@@ -359,8 +380,7 @@ window.__ModuleLoader__.load({
           });
         }, 280);
       }
-      function clearFlags() {
-        if (!window.confirm("删除全部旗标留痕（" + flags.length + " 条）？\n仅删工作台留痕（flags.jsonl），不动黑板 flag。")) return;
+      function doClear() {
         var keys = flags.map(flagKey);
         setRemoving(function (r) { return r.concat(keys); });
         setTimeout(function () {
@@ -371,6 +391,15 @@ window.__ModuleLoader__.load({
             setRemoving([]);
           }).catch(function () { setRemoving([]); });
         }, 280);
+      }
+      function deleteFlag(f) { setConfirmReq({ kind: "one", flag: f }); }
+      function clearFlags() { setConfirmReq({ kind: "all" }); }
+      function confirmDelete() {
+        var req = confirmReq;
+        setConfirmReq(null);
+        if (!req) return;
+        if (req.kind === "one") doDelete(req.flag);
+        else doClear();
       }
 
       if (!draft) return h("div", { className: "mw-root" }, h("div", { className: "mw-empty" }, "正在连接工作台服务…"));
@@ -604,7 +633,21 @@ window.__ModuleLoader__.load({
               className: "mw-save" + (saveState === "done" ? " done" : ""),
               disabled: !dirty || saveState === "saving",
               onClick: save,
-            }, saveState === "done" ? "✓ 已应用" : saveState === "saving" ? "保存中…" : "保存并应用")))
+            }, saveState === "done" ? "✓ 已应用" : saveState === "saving" ? "保存中…" : "保存并应用"))),
+        confirmReq
+          ? h("div", { className: "mw-modal-mask", onClick: function () { setConfirmReq(null); } },
+              h("div", {
+                className: "mw-modal", role: "dialog", "aria-modal": true,
+                onClick: function (e) { e.stopPropagation(); },
+              },
+                h("div", { className: "mw-modal-warn" }, "⚠"),
+                h("div", { className: "mw-modal-title" }, confirmReq.kind === "one" ? "删除这条旗标留痕？" : "删除全部旗标留痕？"),
+                h("div", { className: "mw-modal-value" }, confirmReq.kind === "one" ? confirmReq.flag.value : flags.length + " 条旗标"),
+                h("div", { className: "mw-modal-note" }, "仅删工作台留痕（flags.jsonl），不动黑板 flag。"),
+                h("div", { className: "mw-modal-acts" },
+                  h("button", { className: "mw-modal-cancel", onClick: function () { setConfirmReq(null); } }, "取消"),
+                  h("button", { className: "mw-modal-danger", onClick: confirmDelete }, "删除"))))
+          : null
       );
     }
 

@@ -32,7 +32,8 @@
   并在 run 返回 `advice` 提示主会话跳过 review 直接报 flag。关闭即停轮询、隐藏横幅。
   - 每条 flag 右列**固定**复制 / 删除按钮（`flex:none`，长 flag 在左列 `min-width:0` 换行，窄侧栏不挤掉按钮/时间）；
     复制只写 flag 值进剪贴板（async clipboard，webview 拒绝回退 execCommand），成功闪 ✓；
-    删除 / 全部删除先 `confirm` 确认（写明仅删留痕不动黑板），再播 280ms 滑出收起动画后调
+    删除 / 全部删除弹**工作台内居中确认模态**（`.mw-modal`：琥珀警告标 + 品红描边卡片 + 取消暗色 / 删除红粉渐变，
+    不用系统白框；点遮罩或取消关闭），写明仅删留痕不动黑板；确认后播 280ms 滑出收起动画再调
     `/api/muteki/flags/delete` / `/api/muteki/flags/clear` 重写 `flags.jsonl`。
 - **账本快照**：按题卡片显示派单次数 / DeepSeek 估算成本（¥/$）/ 剩余令牌 + 令牌条，5 秒轮询。
 
