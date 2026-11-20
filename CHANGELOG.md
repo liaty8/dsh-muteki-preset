@@ -12,7 +12,7 @@
 
 ## [1.12.0] - 2026-11-20
 
-比赛抢速度：首解即报可选开关 + 旗标即时横幅；并修掉两个实机验证抓出的回归（访问检查误伤自家 UI、run 返回 schema 拒收）。
+比赛抢速度：首解即报可选开关 + 旗标即时横幅（含复制/删除/全部删除与工作台内确认模态）；并修掉两个实机验证抓出的回归（访问检查误伤自家 UI、run 返回 schema 拒收）。
 
 ### Added
 
@@ -20,6 +20,9 @@
   - attended：flag 探测加密到 1s；run 返回 `solved` + `advice`（提示主会话跳过 review、立即报 flag / 提交）。
   - bulk：run 级 baseline + 1s 旗标守望，worker 写回瞬间落账、**不等该 worker 跑完**；bulk 仍不全局停（别的题还要打），`advice` 提示先报已解出的 flag、剩余 open 任务如需继续再 run。
 - 工作台新增 `/api/muteki/flags` 路由（读 `flags.jsonl` 尾部倒序）。
+- **旗标横幅逐条操作**：每条 flag 右列固定复制 ⧉ / 删除 🗑 按钮（`flex:none`），长 flag 左列 `min-width:0` 自动换行，窄侧栏不挤掉按钮与时间；复制**只写 flag 值**进剪贴板（async clipboard + execCommand 回退），成功闪 ✓。
+- **删除确认改工作台内居中模态**（替换系统白框）：琥珀 ⚠ 警告标 + 品红描边卡片 + flag 值虚线框 + 范围说明（仅删 `flags.jsonl` 留痕、不动黑板 flag）；取消=暗色描边、删除=红→品红渐变白字；点遮罩/取消关闭不删。确认后播 280ms 滑出收起动画。「全部删除」同款模态带条数。
+- 新增 `/api/muteki/flags/delete`（ts+challenge+value 精确匹配删单条）与 `/api/muteki/flags/clear`（清空）路由，沿用同源放行/跨域拒绝围栏。
 
 ### Fixed
 
@@ -28,8 +31,9 @@
 
 ### Tests
 
-- workbench node:test 13（跨域 403 不写盘 / 跨域无 connection 403 / 自家 UI 不误伤 / flagAlert 可保存可收回 / flags 路由倒序）+ orchestrator node:test 58（含 bulk+flagAlert 守望+advice、schema 防漂移）+ Python unittest 147 全绿。
+- workbench node:test 14（跨域 403 不写盘 / 跨域无 connection 403 / 自家 UI 不误伤 / flagAlert 可保存可收回 / flags 路由倒序 / delete 精确删单条 / clear 清空 / 跨域删除不写盘）+ orchestrator node:test 58（含 bulk+flagAlert 守望+advice、schema 防漂移）+ Python unittest 147 全绿。
 - 实机隔离验证：横幅亮旗早于解旗 worker 结束 20.4s / 8.7s 两轮；settings.flagAlert 跑前跑后不丢；修复后返回完整带出「跳过 review」。
+- 浏览器 harness 验证横幅操作：320px 窄栏长 flag 换行 4 行、按钮列固定 61px；复制只含 flag 值；模态居中且限定工作台内、取消不删、确认删除播滑出动画、全部删除清空横幅（截图 `assets/workbench-modal.png`）。
 
 ---
 
