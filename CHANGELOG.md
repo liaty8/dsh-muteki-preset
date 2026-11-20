@@ -23,6 +23,7 @@
 - **旗标横幅逐条操作**：每条 flag 右列固定复制 ⧉ / 删除 🗑 按钮（`flex:none`），长 flag 左列 `min-width:0` 自动换行，窄侧栏不挤掉按钮与时间；复制**只写 flag 值**进剪贴板（async clipboard + execCommand 回退），成功闪 ✓。
 - **删除确认改工作台内居中模态**（替换系统白框）：琥珀 ⚠ 警告标 + 品红描边卡片 + flag 值虚线框 + 范围说明（仅删 `flags.jsonl` 留痕、不动黑板 flag）；取消=暗色描边、删除=红→品红渐变白字；点遮罩/取消关闭不删。确认后播 280ms 滑出收起动画。「全部删除」同款模态带条数。
 - 新增 `/api/muteki/flags/delete`（ts+challenge+value 精确匹配删单条）与 `/api/muteki/flags/clear`（清空）路由，沿用同源放行/跨域拒绝围栏。
+- **宿主版本要求机器可读声明**：工作台 `package.json` 按市场规范以 `peerDependencies` 声明四个宿主包 `>=0.2.2-rc.3 <0.2.3-0`（比较符带预发布标签，rc 构建不被 node-semver 静默排除；已用 semver 实测 rc.3/rc.5/0.2.2 放行）。
 
 ### Fixed
 

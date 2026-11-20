@@ -51,6 +51,11 @@ headless（无 webServer）时服务端静默不注册，不影响做题。
 
 ## 安装
 
+**宿主要求**：DSH **0.2.2 系列 ≥ rc.3**（已在 rc.3 / rc.5 实机验证）。`package.json` 的
+`peerDependencies` 已按市场规范声明 `>=0.2.2-rc.3 <0.2.3-0`（比较符带预发布标签，rc 构建不会被
+node-semver 静默排除）；四个宿主包：`dsh-api-session-controller`、`dsh-client-ui-sidebar-right`、
+`dsh-client-ui-subagent`、`dsh-host-webserver`。
+
 `install.ps1` 会自动四步：包复制到 `<profile>/muteki-workbench-pkg/`、junction 到
 `node_modules/muteki-workbench`、profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、
 **把 `muteki-workbench` 加进 `dsh.profile.bundles` 白名单**。重启 DSH 后右侧栏出现页签。
@@ -66,6 +71,7 @@ headless（无 webServer）时服务端静默不注册，不影响做题。
 - 覆盖层只认白名单键（与 orchestrator `SETTINGS_KEYS` 一致），未知键丢弃；坏 JSON body 返回 400。
 - 自动开 pane 依赖宿主 `subagentCatalog` projection 与 `subagentchat` resource provider
   （`dsh-client-ui-subagent`）；宿主缺该包时只损失自动开 pane，工作台其余功能不受影响。
-- 服务端路由仅本机 web 平面可达（与 helmd 同契约），不对外监听；且每个 handler 先过
-  `connection.requestRejection(req)`（Host/Origin 围栏防 DNS rebinding / 跨站调用 + 浏览器登录态），
-  被拒返回 401/403、不触达任何读写。`inject` 声明 `connection`（DSH ≥0.2.2-rc.3 的 web 平面提供）。
+- 服务端路由仅本机 web 平面可达（与 helmd 同契约），不对外监听；访问检查只拦**跨域 Origin**
+  （浏览器里别的网页，防 DNS rebinding / 跨站调用），同源 / dsh-app / 无 Origin（工作台自身、
+  本机工具）放行——desktop webview 无浏览器登录态 cookie，一律走 `connection.requestRejection`
+  会误伤自家 UI。`connection` 请求时懒读、不进 inject 依赖；被拒返回 401/403、不触达任何读写。
