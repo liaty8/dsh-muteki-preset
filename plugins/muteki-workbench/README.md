@@ -26,13 +26,17 @@
 - **保存即生效，不用重启 DSH**：覆盖写进 `storageDir/settings.json`，orchestrator 在下一次额度判定读取
   （优先级高于 patch config；删文件=收回覆盖）。
 - **派单自动打开子代理实时对话 pane**（可关，默认开，最多 8 个）。
+- **首解即报（可选，默认关）**：行为区开关 `flagAlert`。开启后 2s 轮询 `/api/muteki/flags`
+  （读 orchestrator 落的 `flags.jsonl`），顶部横幅直接显示 flag 值 + 题名 + 时间，
+  不用等主会话收束、不用人工点子代理；orchestrator 侧 attended 同时把 flag 探测加密到 1s
+  并在 run 返回 `advice` 提示主会话跳过 review 直接报 flag。关闭即停轮询、隐藏横幅。
 - **账本快照**：按题卡片显示派单次数 / DeepSeek 估算成本（¥/$）/ 剩余令牌 + 令牌条，5 秒轮询。
 
 ## 结构
 
 | 文件 | 作用 |
 |---|---|
-| `server.mjs` | `ctx.inject(["webServer","connection"])` 等服务就绪后 `webServer.register` 挂 `/api/muteki/settings`（GET/POST，白名单过滤）与 `/api/muteki/ledger`；每个 handler 先走 `connection.requestRejection(req)`（Host/Origin 围栏 + 浏览器登录态），被拒 401/403 不触达读写。**不能直读 `ctx.webServer`**：cordis 服务未 inject 时拿不到，会静默丢路由（实机 404 的根因） |
+| `server.mjs` | `ctx.inject(["webServer","connection"])` 等服务就绪后 `webServer.register` 挂 `/api/muteki/settings`（GET/POST，白名单过滤）、`/api/muteki/ledger` 与 `/api/muteki/flags`（读 `flags.jsonl` 尾部，供首解即报横幅）；每个 handler 先走 `connection.requestRejection(req)`（Host/Origin 围栏 + 浏览器登录态），被拒 401/403 不触达读写。**不能直读 `ctx.webServer`**：cordis 服务未 inject 时拿不到，会静默丢路由（实机 404 的根因） |
 | `client.js` | 浏览器半：`sidebarRightTabs.register` + `sidebar.right.pane.tab` slot 注册页签；自动开 pane 监听 |
 | `cordis.patch.yml` | 包自带 bundle patch：自挂服务端插件（`enabled` 可关） |
 | `package.json` | `dsh.bundle.patch` + `dsh.client`（platform web，inject sidebar-right / subagent UI） |

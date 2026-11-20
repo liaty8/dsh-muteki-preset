@@ -57,6 +57,7 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 | `maxRunsPerChallenge` | 按 mode | **整题累计**派单总闸，不随小时重置；attended 300 / unattended 100 |
 | `maxCostUsdPerChallenge` | 按 mode | **整题累计**成本总闸（美元）；attended 50 / unattended 15 |
 | `hardCancelOnFlag` | `true` | 出现本轮新 flag 后中断同批子代理 |
+| `flagAlert` | `false` | 首解即报（抢速度）：新 flag 落账 `flags.jsonl` 供工作台横幅即时显示；attended 同时把 flag 探测加密到 1s，并在 run 返回 `solved` + `advice`（提示主会话跳过 review 直接报 flag）。可被工作台运行时覆盖 |
 | `claudeBin` | `claude` | Claude Code CLI 路径 |
 | `claudeConfigDir` | 空 | 干净配置目录（建议单独一份，无插件无记忆） |
 | `enabled` | `true` | 总开关 |
@@ -73,6 +74,7 @@ Copy-Item .\plugin-v13.mjs "$p\muteki-orchestrator.mjs" -Force
 
 - **完成驱动并发池**：任一 worker 结束立刻补派下一个 open 任务，不等整批最慢者；池上限按 tier（`limit` 参数可临时覆盖，1–16）。
 - **flag 按题归属**：整批共用一个 challenge，每个 worker 派单前快照 flag baseline，结束时差集归到该题；**不做全局首解 cancel**，worker 提示词也屏蔽了「图中已有 flag 就结束」的共享捷径。
+- **首解即报（`flagAlert`，可选）**：开启后 run 级 baseline + 1s 旗标守望，worker 写回 flag 的瞬间就落账 `flags.jsonl`（工作台横幅即时显示），**不等该 worker 跑完、也不等整批收束**；run 返回 `solved` + `advice` 提示主会话先报已解出的 flag / 提交、跳过 review，剩余 open 任务如需继续再 run。bulk 仍不全局停——别的题还要打。
 - **无停滞熔断**；worker 没自己标 done 的任务最多重试一次，再失败 `task drop`（返回值 `bulk.dropped` 计数）。
 - 收束条件：队列抽干且池空（`empty`）、额度（`budget`）、超时（`max_minutes` 默认 120）、用户中断（`interrupted`）。`max_rounds` 在 bulk 下不生效。
 - 返回值多一个 `bulk` 明细：`poolSize` / `peakPool` / `solved`（按题归属的 flag 数）/ `dropped`。

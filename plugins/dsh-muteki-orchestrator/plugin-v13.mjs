@@ -148,6 +148,10 @@ export const Config = z.object({
     .number()
     .comment("整题累计成本总闸（美元，不随小时重置）；省略则用 mode 预设（attended 50 / unattended 15）"),
   hardCancelOnFlag: z.boolean().default(true),
+  flagAlert: z
+    .boolean()
+    .default(false)
+    .comment("首解即报（抢速度）：新 flag 落账 flags.jsonl 供工作台横幅即时显示；attended 同时把 flag 探测加密到 1s 并在返回里提示主会话跳过 review 直接报 flag"),
   claudeBin: z.string().default("claude"),
   claudeConfigDir: z.string().default(""),
   enabled: z.boolean().default(true),
@@ -168,6 +172,7 @@ export function apply(ctx, config) {
 
   const runsFile = join(config.storageDir, "runs.json");
   const subagentLog = join(config.storageDir, "subagents.jsonl");
+  const flagsFile = join(config.storageDir, "flags.jsonl");
   mkdirSync(config.storageDir, { recursive: true });
 
   // ── 工作台运行时覆盖层（settings.json）─────────────────────────────────
@@ -177,7 +182,7 @@ export function apply(ctx, config) {
     "mode", "tier", "poolSize", "maxRunsPerHour", "burstRuns", "onQuota",
     "maxWaitMinutes", "stagnationLimit", "maxCostUsdPerHour", "maxRunsPerChallenge",
     "maxCostUsdPerChallenge", "workerUsdPerMinute", "estimateToActual", "costBasis",
-    "hardCancelOnFlag",
+    "hardCancelOnFlag", "flagAlert",
   ];
   const settingsFile = join(config.storageDir, "settings.json");
   // 数字键容错：工作台 <input> 可能写字符串，resolveLimits 只认 number，读时 coerce。
@@ -749,6 +754,20 @@ export function apply(ctx, config) {
   const flagValue = (flag) =>
     typeof flag === "string" ? flag : String(flag?.value ?? flag?.flag ?? flag);
 
+  // 首解留痕：新 flag 一出现就追加 flags.jsonl，供工作台横幅即时读取（不用等主会话收束、
+  // 不用人工点子代理）。seen 为本次 run 的去重集合，避免轮询重复写同一条。
+  const recordNewFlags = (challenge, values, seen) => {
+    for (const value of values) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      try {
+        appendFileSync(flagsFile, JSON.stringify({ ts: Date.now(), challenge, value }) + "\n", "utf8");
+      } catch {
+        /* 留痕失败不阻断派单/收束 */
+      }
+    }
+  };
+
   const openReviews = (cwd) => {
     const run = runBoard(["review", "list", "--status", "open", "--json"], cwd);
     if (run.status !== 0) return [];
@@ -850,6 +869,20 @@ ${contextText}
     const attempts = new Map();
     const dispatched = [];
     const solvedFlags = new Set();
+    const flagSeen = new Set();
+    // 首解即报：run 级 baseline + 1s 旗标守望——worker 写回 flag 的瞬间就落账供横幅显示，
+    // 不等该 worker 跑完（bulk 里别的题还在跑，人要先看到已解出的 flag）。
+    const bulkBaseline = new Set(knownFlags(cwd).map(flagValue));
+    let flagTimer = null;
+    if (cfg().flagAlert) {
+      flagTimer = setInterval(() => {
+        try {
+          recordNewFlags(challenge, knownFlags(cwd).map(flagValue).filter((v) => !bulkBaseline.has(v)), flagSeen);
+        } catch {
+          /* 守望失败不影响并发池 */
+        }
+      }, 1000);
+    }
     let dropped = 0;
     let peakPool = 0;
     let rounds = 0;
@@ -918,9 +951,9 @@ ${contextText}
         const item = pool.get(childId);
         pool.delete(childId);
         if (!item) continue;
-        for (const value of knownFlags(cwd).map(flagValue)) {
-          if (!item.baseline.has(value)) solvedFlags.add(value);
-        }
+        const fresh = knownFlags(cwd).map(flagValue).filter((v) => !item.baseline.has(v));
+        for (const value of fresh) solvedFlags.add(value);
+        recordNewFlags(challenge, fresh, flagSeen);
         // worker 没自己标 done：没到重试上限就释放回 open，到了就 drop
         let reopened = false;
         try {
@@ -945,6 +978,11 @@ ${contextText}
         rounds,
         dispatched,
         flags: [...solvedFlags],
+        solved: solvedFlags.size > 0,
+        // 首解即报：bulk 不全局停（别的题还要打），但提示主会话先报已解出的 flag、跳过 review
+        ...(cfg().flagAlert && solvedFlags.size > 0
+          ? { advice: "首解即报：已解出 " + solvedFlags.size + " 题，flag 见 flags 与工作台横幅；先向用户报 flag / 提交，跳过 review；剩余 open 任务如需继续再 run。" }
+          : {}),
         stoppedReason,
         quota: quotaSummary(exitQuota),
         resumeAt: tokenHit ? Date.now() + (tokenHit.waitMs || 0) : 0,
@@ -956,6 +994,7 @@ ${contextText}
         bulk: { poolSize, peakPool, solved: solvedFlags.size, dropped },
       };
     } finally {
+      if (flagTimer) clearInterval(flagTimer);
       // 与单题路径一致：派出但没做完的任务释放回 open，不留假 claimed
       for (const item of dispatched) {
         try {
@@ -1349,6 +1388,13 @@ ${contextText}
       const baseline = new Set(knownFlags(cwd).map(flagValue));
       const freshFlags = () =>
         knownFlags(cwd).filter((flag) => !baseline.has(flagValue(flag)));
+      const flagSeen = new Set();
+      // 检测到新 flag 的同时落账 flags.jsonl（工作台横幅即时可见）
+      const alertFlags = () => {
+        const vals = freshFlags().map(flagValue);
+        recordNewFlags(challenge, vals, flagSeen);
+        return vals;
+      };
 
       const dispatched = [];
       let rounds = 0;
@@ -1434,11 +1480,13 @@ ${contextText}
           batchDone = true;
         });
         const flagPromise = (async () => {
+          // 首解即报开启时把探测加密到 1s，让横幅/收束更快跟上 worker 写回
+          const interval = cfg().flagAlert ? 1000 : 2000;
           while (!batchDone) {
-            await sleep(2000);
-            if (freshFlags().length > 0) return true;
+            await sleep(interval);
+            if (alertFlags().length > 0) return true;
           }
-          return freshFlags().length > 0;
+          return alertFlags().length > 0;
         })();
         const winner = await Promise.race([
           resultsPromise.then(() => "done"),
@@ -1458,7 +1506,7 @@ ${contextText}
           break;
         }
 
-        const flags = freshFlags();
+        const flags = alertFlags();
         if (flags.length > 0) {
           stoppedReason = "flag";
           break;
@@ -1515,6 +1563,11 @@ ${contextText}
         limit,
         dispatched,
         flags: freshFlags().map(flagValue),
+        solved: stoppedReason === "flag",
+        // 首解即报：提示主会话别等 review，立刻报 flag / 提交（比赛抢速度）
+        ...(cfg().flagAlert && stoppedReason === "flag"
+          ? { advice: "首解即报：已解出 flag，立即向用户报出 flag 值并提交（有平台配置用 muteki_submit），跳过 review。" }
+          : {}),
         stoppedReason,
         quota: quotaSummary(exitQuota),
         resumeAt: tokenHit ? Date.now() + (tokenHit.waitMs || 0) : 0,

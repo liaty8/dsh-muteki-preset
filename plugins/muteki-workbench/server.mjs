@@ -20,9 +20,9 @@ export const name = "muteki-workbench";
 
 // cordis 服务必须声明 inject 才能访问；webServer 由 web 平面异步提供，
 // 直接读 ctx.webServer 会拿不到（helmd 同款坑：它用 ctx.inject 等就绪）。
-// connection 提供 Host/Origin 围栏 + 浏览器登录态校验（requestRejection），
-// 与 dsh-host-open-in-app / dsh-experimental-inspector 同款注入组合。
-export const inject = ["webServer", "connection"];
+// connection 不进 inject 依赖：desktop 宿主不一定把它作为可 inject 服务暴露，
+// 写进依赖会让整组路由永不注册；改为请求时懒读（见 route handler）。
+export const inject = ["webServer"];
 
 export const Config = z.object({
   enabled: z.boolean().default(true),
@@ -33,7 +33,7 @@ const SETTINGS_KEYS = [
   "mode", "tier", "poolSize", "maxRunsPerHour", "burstRuns", "onQuota",
   "maxWaitMinutes", "stagnationLimit", "maxCostUsdPerHour", "maxRunsPerChallenge",
   "maxCostUsdPerChallenge", "workerUsdPerMinute", "estimateToActual", "costBasis",
-  "hardCancelOnFlag", "autoOpenPane", "currency", "usdToCny",
+  "hardCancelOnFlag", "autoOpenPane", "currency", "usdToCny", "flagAlert",
 ];
 
 // 数字键：UI 的 <input> 给的是字符串，resolveLimits 只认 number，写入前 coerce。
@@ -100,10 +100,9 @@ export function apply(ctx, config) {
   mkdirSync(storageDir, { recursive: true });
   const settingsFile = join(storageDir, "settings.json");
 
-  ctx.inject(["webServer", "connection"], (webCtx) => {
+  ctx.inject(["webServer"], (webCtx) => {
     const webServer = webCtx.webServer;
     if (!webServer?.register) return; // 无 web 平面（headless）时静默不注册
-    const connection = webCtx.connection;
     const seen = new Set();
     function route(path, handler) {
       if (seen.has(path)) return;
@@ -112,11 +111,18 @@ export function apply(ctx, config) {
         kind: "exact",
         path,
         handler: async (req, res) => {
-          // 安全围栏：先问 connection 是否拒绝（Host/Origin 防 DNS rebinding +
-          // 跨站调用、浏览器登录态）。返回 401/403 时直接结束，不触达任何读写。
-          const rejection = connection?.requestRejection?.(req);
-          if (rejection !== undefined) {
-            res.statusCode = rejection;
+          // 安全围栏：挡的是「浏览器里别的网页」跨站调用（它们必带跨域 Origin）。
+          // 工作台自身 UI 与本机工具（同源 / dsh-app / 无 Origin）放行——desktop webview
+          // 没有浏览器登录态 cookie，若一律走 requestRejection 会把自家 UI 也 401 掉
+          // （实机「保存不了」的根因）。跨域请求才问 connection，问不到就直接 403。
+          const origin = req.headers?.origin || "";
+          const host = req.headers?.host || "";
+          const local =
+            !origin || origin.startsWith("dsh-app:") || origin.endsWith("://" + host);
+          if (!local) {
+            const connection = Reflect.get(ctx, "connection");
+            const rejection = connection?.requestRejection?.(req);
+            res.statusCode = rejection !== undefined ? rejection : 403;
             res.end();
             return;
           }
@@ -161,6 +167,26 @@ export function apply(ctx, config) {
         runsCount: Array.isArray(runs) ? runs.length : 0,
         costsCount: Array.isArray(costs) ? costs.length : 0,
       };
+    });
+
+    // 首解即报：orchestrator 检测到新 flag 即追加 flags.jsonl；这里读尾部供工作台横幅
+    // 即时显示 flag 值（不用等主会话收束、不用人工点子代理）。
+    route("/api/muteki/flags", () => {
+      let lines = [];
+      try {
+        lines = readFileSync(join(storageDir, "flags.jsonl"), "utf8").trim().split("\n").filter(Boolean);
+      } catch {
+        /* 还没有 flag 留痕 */
+      }
+      const flags = [];
+      for (const line of lines.slice(-20)) {
+        try {
+          flags.push(JSON.parse(line));
+        } catch {
+          /* 坏行跳过 */
+        }
+      }
+      return { flags: flags.reverse() };
     });
   });
 }

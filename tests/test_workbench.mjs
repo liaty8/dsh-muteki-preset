@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -30,6 +30,7 @@ async function withServer(options, fn) {
   const mod = await import(pathToFileURL(join(root, "server.mjs")).href);
   const routes = new Map();
   const ctx = options?.noWeb ? {} : { webServer: { register: (r) => routes.set(r.path, r) } };
+  if (options?.connection) ctx.connection = options.connection;
   let pendingInject = null;
   ctx.inject = (_deps, fn) => {
     if (options?.lateWeb) pendingInject = fn;
@@ -92,6 +93,20 @@ test("workbench: ledger 快照读账本计数", { skip: SKIP_REASON }, async () 
     assert.equal(get.json.data.runsCount, 3);
     assert.equal(get.json.data.costsCount, 2);
     assert.equal(get.json.data.totals["web-1"].runs, 3);
+  });
+});
+
+test("workbench: flags 路由读 flags.jsonl 尾部并倒序（首解即报横幅数据源）", { skip: SKIP_REASON }, async () => {
+  await withServer({}, async (s) => {
+    writeFileSync(
+      join(s.storageDir, "flags.jsonl"),
+      JSON.stringify({ ts: 1, challenge: "a", value: "flag{1}" }) + "\n" +
+      JSON.stringify({ ts: 2, challenge: "b", value: "flag{2}" }) + "\n",
+      "utf8",
+    );
+    const get = await s.call("/api/muteki/flags");
+    assert.equal(get.status, 200);
+    assert.deepEqual(get.json.data.flags.map((f) => f.value), ["flag{2}", "flag{1}"]);
   });
 });
 
@@ -166,4 +181,55 @@ test("orchestrator: settings.json 覆盖运行时生效，删除即收回", { sk
   } finally {
     h.cleanup();
   }
+});
+
+// 安全围栏：挡跨站网页（必带跨域 Origin），放行工作台自身 UI / 本机工具
+// （同源 / dsh-app / 无 Origin）。desktop webview 无浏览器登录态，一律走
+// requestRejection 会把自家 UI 也 401 掉（实机「保存不了」根因）。
+function rawCall(s, path, method, body, headers) {
+  const route = s.routes.get(path);
+  assert.ok(route, `路由未注册：${path}`);
+  const base = { method, headers: headers || {} };
+  const req = body === undefined
+    ? Object.assign(Readable.from([]), base)
+    : Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), base);
+  const res = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v; }, end(x) { this.body = x; } };
+  return route.handler(req, res).then(() => res);
+}
+const CROSS = { origin: "https://evil.example", host: "127.0.0.1:41537" };
+
+test("workbench: 跨域请求被拒 403 且不写 settings（connection 给出拒绝码）", { skip: SKIP_REASON }, async () => {
+  await withServer({ connection: { requestRejection: () => 403 } }, async (s) => {
+    const post = await rawCall(s, "/api/muteki/settings", "POST", { mode: "bulk", poolSize: 4 }, CROSS);
+    assert.equal(post.statusCode, 403);
+    assert.ok(!existsSync(join(s.storageDir, "settings.json")), "被拒请求不应写盘");
+    const get = await rawCall(s, "/api/muteki/ledger", "GET", undefined, CROSS);
+    assert.equal(get.statusCode, 403);
+  });
+});
+
+test("workbench: 跨域且无 connection 服务时直接 403", { skip: SKIP_REASON }, async () => {
+  await withServer({}, async (s) => {
+    const get = await rawCall(s, "/api/muteki/flags", "GET", undefined, CROSS);
+    assert.equal(get.statusCode, 403);
+  });
+});
+
+test("workbench: 自身 UI（无 Origin/同源/dsh-app）不被登录态围栏误伤", { skip: SKIP_REASON }, async () => {
+  await withServer({ connection: { requestRejection: () => 401 } }, async (s) => {
+    for (const headers of [undefined, { origin: "http://127.0.0.1:41537", host: "127.0.0.1:41537" }, { origin: "dsh-app://desktop", host: "127.0.0.1:41537" }]) {
+      const post = await rawCall(s, "/api/muteki/settings", "POST", { flagAlert: true }, headers);
+      assert.equal(post.statusCode, 200, "自家 UI 不应被 401/403");
+    }
+  });
+});
+
+test("workbench: flagAlert 可保存可收回（首解即报开关回归）", { skip: SKIP_REASON }, async () => {
+  await withServer({}, async (s) => {
+    const on = await s.call("/api/muteki/settings", "POST", { mode: "bulk", flagAlert: true });
+    assert.equal(on.status, 200);
+    assert.equal(on.json.data.settings.flagAlert, true);
+    const off = await s.call("/api/muteki/settings", "POST", { mode: "bulk" });
+    assert.equal(off.json.data.settings.flagAlert, undefined, "全量替换：省略即收回");
+  });
 });

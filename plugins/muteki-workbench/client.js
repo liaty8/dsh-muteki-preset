@@ -124,6 +124,12 @@ window.__ModuleLoader__.load({
       ".mw-empty{color:var(--faint);font-size:12px;border:1px dashed var(--line);border-radius:12px;padding:14px;text-align:center}",
       ".mw-note{margin-top:8px;font-size:11px;color:var(--amber);display:flex;gap:6px;align-items:flex-start;line-height:1.5}",
       ".mw-note::before{content:'⚠';flex:none}",
+      ".mw-flags{margin:0 0 12px;border:1px solid var(--green);border-radius:12px;padding:10px 12px;background:linear-gradient(160deg,rgba(52,211,153,.14),rgba(52,211,153,.04));box-shadow:0 0 0 1px rgba(52,211,153,.25),0 8px 24px -12px var(--green)}",
+      ".mw-flags-h{font:800 11px/1 ui-monospace,monospace;letter-spacing:.08em;color:var(--green);margin-bottom:8px}",
+      ".mw-flag{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;padding:5px 0;border-top:1px dashed rgba(52,211,153,.3)}",
+      ".mw-flag:first-of-type{border-top:0}",
+      ".mw-flag .v{font:700 12.5px/1.4 ui-monospace,'Cascadia Code',Consolas,monospace;color:#eafff5;word-break:break-all}",
+      ".mw-flag .meta{font-size:10.5px;color:var(--dim)}",
       ".mw-tip{position:fixed;z-index:9999;transform:translate(-50%,-100%);pointer-events:none;",
       "background:linear-gradient(160deg,#1a2440,#101828);border:1px solid #22d3ee;border-radius:9px;",
       "color:#ffffff;font-size:11.5px;line-height:1.5;padding:7px 10px;max-width:240px;",
@@ -186,6 +192,7 @@ window.__ModuleLoader__.load({
       var out = {};
       if (o.mode) out.mode = o.mode;
       if (o.tier) out.tier = o.tier;
+      if (o.flagAlert) out.flagAlert = true;
       out.autoOpenPane = o.autoOpenPane !== false;
       out.currency = o.currency === "USD" ? "USD" : "CNY";
       out.usdToCny = Number(o.usdToCny) > 0 ? Number(o.usdToCny) : 7.2;
@@ -248,6 +255,8 @@ window.__ModuleLoader__.load({
       var ledger = l[0], setLedger = l[1];
       var sv = React.useState("idle");
       var saveState = sv[0], setSaveState = sv[1];
+      var fg = React.useState([]);
+      var flags = fg[0], setFlags = fg[1];
 
       React.useEffect(function () {
         ensureStyle();
@@ -259,7 +268,7 @@ window.__ModuleLoader__.load({
             setStored(s);
             setDraft(function (prev) {
               if (prev) return prev; // 已有草稿不覆盖
-              var base = { mode: s.mode || "attended", autoOpenPane: s.autoOpenPane !== false, currency: s.currency === "USD" ? "USD" : "CNY", usdToCny: Number(s.usdToCny) > 0 ? Number(s.usdToCny) : 7.2 };
+              var base = { mode: s.mode || "attended", autoOpenPane: s.autoOpenPane !== false, flagAlert: s.flagAlert === true, currency: s.currency === "USD" ? "USD" : "CNY", usdToCny: Number(s.usdToCny) > 0 ? Number(s.usdToCny) : 7.2 };
               if (s.tier) base.tier = s.tier;
               if (hasNums(s)) { NUMKEYS.forEach(function (k) { if (s[k] !== undefined) base[k] = s[k]; }); if (s.costBasis) base.costBasis = s.costBasis; }
               // 无覆盖时默认「人主导 + 跟随预设」：推荐档只以 badge 标示，
@@ -275,6 +284,21 @@ window.__ModuleLoader__.load({
         var t = setInterval(load, 5000);
         return function () { alive = false; clearInterval(t); };
       }, []);
+
+      // 首解即报：开启时 2s 轮询旗标留痕，横幅直接显示 flag 值（不用点子代理）
+      var flagAlertOn = !!(draft && draft.flagAlert);
+      React.useEffect(function () {
+        if (!flagAlertOn) { setFlags([]); return; }
+        var alive = true;
+        function pull() {
+          fetchJson("/api/muteki/flags").then(function (j) {
+            if (alive && j && j.ok) setFlags(j.data.flags || []);
+          }).catch(function () {});
+        }
+        pull();
+        var t = setInterval(pull, 2000);
+        return function () { alive = false; clearInterval(t); };
+      }, [flagAlertOn]);
 
       if (!draft) return h("div", { className: "mw-root" }, h("div", { className: "mw-empty" }, "正在连接工作台服务…"));
 
@@ -350,6 +374,16 @@ window.__ModuleLoader__.load({
           h("div", { className: "mw-sub" }, "选档位即可，无需理解每个数字；保存后下一次派单立即生效，不用重启。"),
         ),
 
+        flagAlertOn && flags.length > 0
+          ? h("div", { className: "mw-flags" },
+              h("div", { className: "mw-flags-h" }, "🚩 首解即报 · 已解出 " + flags.length + " 题"),
+              flags.map(function (f, i) {
+                return h("div", { className: "mw-flag", key: (f.ts || 0) + "-" + i },
+                  h("span", { className: "v" }, f.value),
+                  h("span", { className: "meta" }, (f.challenge || "") + " · " + (f.ts ? new Date(f.ts).toLocaleTimeString() : "")));
+              }))
+          : null,
+
         h("div", { className: "mw-sec", style: { animationDelay: "60ms" } },
           h("div", { className: "mw-sec-h" }, h("span", { className: "idx" }, "01"), "运行模式", h("span", { className: "hint" }, "决定额度与并行形状")),
           h("div", { className: "mw-modes" }, MODES.map(function (m) {
@@ -397,6 +431,14 @@ window.__ModuleLoader__.load({
                 className: "mw-switch" + (draft.autoOpenPane !== false ? " on" : ""),
                 role: "switch", "aria-checked": draft.autoOpenPane !== false,
                 onClick: function () { set("autoOpenPane", draft.autoOpenPane === false); },
+              }))),
+          h(Tip, { text: "首解即报（抢速度）：任一 worker 写出 flag，工作台顶部横幅立刻显示 flag 值，不用等主会话收束、不用点子代理；人主导模式同时把 flag 探测加密到 1s 并提示主会话跳过 review 直接报 flag。" },
+            h("div", { className: "mw-row", style: { marginTop: 8 } },
+              h("div", null, h("div", { className: "lb" }, "首解即报（抢速度）"), h("div", { className: "ds" }, "flag 一解出就在顶部横幅显示，比赛不用翻子代理")),
+              h("button", {
+                className: "mw-switch" + (draft.flagAlert ? " on" : ""),
+                role: "switch", "aria-checked": !!draft.flagAlert,
+                onClick: function () { set("flagAlert", !draft.flagAlert); },
               }))),
           h("div", { className: "mw-row", style: { marginTop: 8 } },
             h("div", null, h("div", { className: "lb" }, "计价货币"), h("div", { className: "ds" }, "DSH/DeepSeek 按人民币计费；内部估算仍为美元标价，按汇率换算显示")),

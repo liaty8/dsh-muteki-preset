@@ -231,6 +231,43 @@ test("run: worker 写回 flag → 首解即停（回归）", { skip: SKIP_REASON
   );
 });
 
+test("flagAlert: 首解即报返回 advice 且 flags.jsonl 留痕；关闭时无 advice 但仍留痕", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      worker: async ({ board }) => {
+        board(["flag", "flag{alert}", "--source", "mock-worker"]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-alert"]);
+      h.seedTask("任务一");
+      writeJson(h.ledger("settings.json"), { flagAlert: true });
+      const out = await h.call("muteki_run", { challenge: "t-alert", limit: 1, max_rounds: 5 });
+      assert.equal(out.stoppedReason, "flag");
+      assert.equal(out.solved, true);
+      assert.match(out.advice, /跳过 review/);
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").map((x) => JSON.parse(x));
+      assert.ok(lines.some((r) => r.value === "flag{alert}" && r.challenge === "t-alert"));
+    },
+  );
+  await withHarness(
+    {
+      worker: async ({ board }) => {
+        board(["flag", "flag{off}", "--source", "mock-worker"]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-alert-off"]);
+      h.seedTask("任务一");
+      const out = await h.call("muteki_run", { challenge: "t-alert-off", limit: 1, max_rounds: 5 });
+      assert.equal(out.stoppedReason, "flag");
+      assert.equal(out.advice, undefined, "flagAlert 默认关时不应给 advice");
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").map((x) => JSON.parse(x));
+      assert.ok(lines.some((r) => r.value === "flag{off}"), "留痕不依赖开关");
+    },
+  );
+});
+
 test("run: 中断后 claimed 任务被释放回 open（回归）", { skip: SKIP_REASON }, async () => {
   await withHarness({ config: { maxRunsPerChallenge: 1 } }, async (h) => {
     h.board(["use", "t-reopen"]);
@@ -930,6 +967,35 @@ test("bulk: flag 按题归属，不触发全局首解停摆", { skip: SKIP_REASO
       assert.equal(out.dispatched.length, 2);
       assert.equal(out.bulk.solved, 1);
       assert.deepEqual(out.flags, ["flag{bulk-one}"]);
+    },
+  );
+});
+
+test("bulk+flagAlert: 旗标守望落账 + 返回 advice 提示先报 flag 跳过 review", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { mode: "bulk", tier: "lite", flagAlert: true },
+      worker: async ({ name, board }) => {
+        const id = taskIdOf(name);
+        if (id === "1") {
+          board(["flag", "flag{bulk-alert}", "--source", "测试"]);
+        } else {
+          await sleep(200);
+        }
+        board(["task", "done", id]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-bulk-alert"]);
+      h.seedTask("题一");
+      h.seedTask("题二");
+      const out = await h.call("muteki_run", { challenge: "t-bulk-alert" });
+      assert.equal(out.stoppedReason, "empty", "bulk 不因首解全局停");
+      assert.equal(out.bulk.solved, 1);
+      assert.equal(out.solved, true);
+      assert.match(out.advice, /跳过 review/);
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").map((x) => JSON.parse(x));
+      assert.ok(lines.some((r) => r.value === "flag{bulk-alert}" && r.challenge === "t-bulk-alert"));
     },
   );
 });

@@ -385,6 +385,7 @@ profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、把 `muteki
 - **派单自动打开子代理实时对话 pane**（默认开、可关、最多 8 个）。
 - 账本快照：按题显示派单次数 / DeepSeek 估算成本 / 剩余令牌。
 - **路由有访问检查**：设置 / 账本两个本机路由先过 DSH `connection.requestRejection`（Host/Origin 围栏 + 浏览器登录态），别的网页调用会被 401/403 挡掉，不触达读写。
+- **首解即报（可选开关，抢速度）**：行为区打开后，任一 worker 写出 flag，工作台顶部横幅**立刻显示 flag 值**（2s 轮询 `flags.jsonl`），不用等主会话收束、不用手动点子代理；人主导模式同时把 flag 探测加密到 1s，并在 run 返回里提示主会话跳过 review、立即报 flag / 提交。默认关，比赛时再开。
 
 在 DSH 右侧栏中的实际样子（靶场批量 + 稳妥档）：
 
