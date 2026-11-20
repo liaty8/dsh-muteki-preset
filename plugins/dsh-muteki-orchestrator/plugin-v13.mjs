@@ -1309,6 +1309,11 @@ ${contextText}
           overrideRequested: { type: "boolean" },
           overrideNote: { type: "string" },
           stagnantRounds: { type: "number" },
+          // 生效每轮并发（attended，clamp 1-3）；bulk 不返回此键
+          limit: { type: "number" },
+          // 首解即报：是否解出 flag + 给主会话的下一步提示（跳过 review 直接报 flag）
+          solved: { type: "boolean" },
+          advice: { type: "string" },
           bulk: {
             type: "object",
             additionalProperties: false,
@@ -1345,6 +1350,7 @@ ${contextText}
             (value.stoppedReason === "interrupted"
               ? "\n被用户中断而停止（不是额度用尽）；未做完的任务已释放回队列，可再跑一次 muteki_run 继续。"
               : "") +
+            (value.advice ? `\n${value.advice}` : "") +
             (value.quota
               ? `\n额度（${value.quota.mode}，成本口径 ${value.quota.costBasis}）：令牌 ${value.quota.tokens}/${value.quota.burstRuns}` +
                 `（回填 ${value.quota.runsPerHour} 次/h，${value.quota.onQuota}）；` +

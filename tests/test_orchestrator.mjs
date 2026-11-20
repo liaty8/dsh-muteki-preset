@@ -1000,6 +1000,49 @@ test("bulk+flagAlert: 旗标守望落账 + 返回 advice 提示先报 flag 跳�
   );
 });
 
+test("run: 返回体顶层键与 bulk 子键都在 output schema 声明（防 schema/实现漂移）", { skip: SKIP_REASON }, async () => {
+  const checkKeys = (h, out) => {
+    const props = h.tools.get("muteki_run").output.schema.properties;
+    for (const k of Object.keys(out)) assert.ok(props[k], `未声明的返回键：${k}`);
+    if (out.bulk) {
+      const bp = props.bulk.properties;
+      for (const k of Object.keys(out.bulk)) assert.ok(bp[k], `未声明的 bulk 键：${k}`);
+    }
+  };
+  await withHarness(
+    {
+      worker: async ({ board }) => {
+        board(["flag", "flag{schema-a}", "--source", "t"]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-schema-a"]);
+      h.seedTask("一");
+      writeJson(h.ledger("settings.json"), { flagAlert: true });
+      const out = await h.call("muteki_run", { challenge: "t-schema-a", limit: 1, max_rounds: 3 });
+      checkKeys(h, out);
+      assert.equal(out.solved, true);
+      assert.ok(out.advice, "flagAlert 首解应带 advice");
+    },
+  );
+  await withHarness(
+    {
+      config: { mode: "bulk", tier: "lite", flagAlert: true },
+      worker: async ({ name, board }) => {
+        board(["flag", "flag{schema-b}", "--source", "t"]);
+        board(["task", "done", taskIdOf(name)]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-schema-b"]);
+      h.seedTask("一");
+      const out = await h.call("muteki_run", { challenge: "t-schema-b" });
+      checkKeys(h, out);
+      assert.equal(out.bulk.solved, 1);
+    },
+  );
+});
+
 test("bulk: worker 不标 done 的任务最多重试一次，再失败 drop", { skip: SKIP_REASON }, async () => {
   await withHarness(
     { config: { mode: "bulk", tier: "lite" }, worker: async () => {} },
