@@ -10,6 +10,29 @@
 
 ---
 
+## [1.12.0] - 2026-11-20
+
+比赛抢速度：首解即报可选开关 + 旗标即时横幅；并修掉两个实机验证抓出的回归（访问检查误伤自家 UI、run 返回 schema 拒收）。
+
+### Added
+
+- **`flagAlert` 首解即报（默认关，工作台行为区开关）**：新 flag 一写回就落账 `storageDir/flags.jsonl`；工作台顶部横幅 2s 轮询 `/api/muteki/flags` 直接显示 flag 值 + 题名 + 时间，**不用等主会话收束、不用手动点子代理**。
+  - attended：flag 探测加密到 1s；run 返回 `solved` + `advice`（提示主会话跳过 review、立即报 flag / 提交）。
+  - bulk：run 级 baseline + 1s 旗标守望，worker 写回瞬间落账、**不等该 worker 跑完**；bulk 仍不全局停（别的题还要打），`advice` 提示先报已解出的 flag、剩余 open 任务如需继续再 run。
+- 工作台新增 `/api/muteki/flags` 路由（读 `flags.jsonl` 尾部倒序）。
+
+### Fixed
+
+- **访问检查误伤自家 UI 导致「保存不了」**：上一版一律走 `connection.requestRejection`，desktop webview 无浏览器登录态 cookie，自家保存请求也被 401。改为只拦**跨域 Origin**（浏览器里别的网页，即市场指出的暴露面），同源 / dsh-app / 无 Origin（工作台自身、本机工具）放行；`connection` 改请求时懒读、不进 inject 依赖（避免宿主不暴露时整组路由不注册）。
+- **`muteki_run` 返回被 schema 拒收**：output schema `additionalProperties:false` 未声明新增顶层 `solved`/`advice`（及 attended 的 `limit`），整个返回值被拒、主会话收不到 stoppedReason/advice。补三个可选键；render 单独一行输出 advice；新增防漂移回归（返回体顶层键与 bulk 子键必须都在 schema 声明，并硬断言 attended 带 limit、bulk 不带）。
+
+### Tests
+
+- workbench node:test 13（跨域 403 不写盘 / 跨域无 connection 403 / 自家 UI 不误伤 / flagAlert 可保存可收回 / flags 路由倒序）+ orchestrator node:test 58（含 bulk+flagAlert 守望+advice、schema 防漂移）+ Python unittest 147 全绿。
+- 实机隔离验证：横幅亮旗早于解旗 worker 结束 20.4s / 8.7s 两轮；settings.flagAlert 跑前跑后不丢；修复后返回完整带出「跳过 review」。
+
+---
+
 ## [1.11.1] - 2026-11-19
 
 市场维护者复核指出的本机路由暴露面修复（awesome-dsh-plugin#16667 合并后反馈）。

@@ -582,7 +582,7 @@ DSH_NODE_MODULES=<你的 DSH home>/profiles/desktop/node_modules \
 本项目是纯源码预设，没有可编译产物，Source code 压缩包就是完整发行物。下载后核对：
 
 ```powershell
-Get-FileHash .\v1.11.1.zip -Algorithm SHA256   # 与 SHA256SUMS.txt 对应行比对
+Get-FileHash .\v1.12.0.zip -Algorithm SHA256   # 与 SHA256SUMS.txt 对应行比对
 ```
 
 ---

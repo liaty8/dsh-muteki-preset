@@ -1023,6 +1023,7 @@ test("run: 返回体顶层键与 bulk 子键都在 output schema 声明（防 sc
       checkKeys(h, out);
       assert.equal(out.solved, true);
       assert.ok(out.advice, "flagAlert 首解应带 advice");
+      assert.equal(typeof out.limit, "number", "attended 应带生效 limit");
     },
   );
   await withHarness(
@@ -1039,6 +1040,7 @@ test("run: 返回体顶层键与 bulk 子键都在 output schema 声明（防 sc
       const out = await h.call("muteki_run", { challenge: "t-schema-b" });
       checkKeys(h, out);
       assert.equal(out.bulk.solved, 1);
+      assert.equal(out.limit, undefined, "bulk 返回不应带 limit（limit 仅 attended）");
     },
   );
 });

@@ -5,6 +5,6 @@
     ".": "./plugin-v13.mjs"
   },
   "main": "./plugin-v13.mjs",
-  "version": "1.11.1",
+  "version": "1.12.0",
   "type": "module"
 }
