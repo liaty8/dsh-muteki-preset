@@ -24,6 +24,7 @@
 - **删除确认改工作台内居中模态**（替换系统白框）：琥珀 ⚠ 警告标 + 品红描边卡片 + flag 值虚线框 + 范围说明（仅删 `flags.jsonl` 留痕、不动黑板 flag）；取消=暗色描边、删除=红→品红渐变白字；点遮罩/取消关闭不删。确认后播 280ms 滑出收起动画。「全部删除」同款模态带条数。
 - 新增 `/api/muteki/flags/delete`（ts+challenge+value 精确匹配删单条）与 `/api/muteki/flags/clear`（清空）路由，沿用同源放行/跨域拒绝围栏。
 - **宿主版本要求机器可读声明**：工作台 `package.json` 按市场规范以 `peerDependencies` 声明四个宿主包 `>=0.2.2-rc.3 <0.2.3-0`（比较符带预发布标签，rc 构建不被 node-semver 静默排除；已用 semver 实测 rc.3/rc.5/0.2.2 放行）。
+- **工作台子包版本号对齐预设 release**（1.0.1 → 1.12.0）：DSH market 的版本探针读条目链接子包的 `package.json`，此前子包版本不随 release 走导致市场显示旧版。
 
 ### Fixed
 
