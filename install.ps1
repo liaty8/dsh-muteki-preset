@@ -51,6 +51,15 @@ Write-Host ""
 if ((Test-Path $patchPath) -and (Select-String -Path $patchPath -Pattern "id: preset-muteki" -Quiet) -and -not $Force) {
   throw "profile 里已经有 preset-muteki。要重装请加 -Force（会重复插入，建议先手动删掉旧段）。"
 }
+# 0b) market 版预设检测：bundle 的 patch 已含 preset-muteki，再手动追加会 insert id 重复
+$pkgJsonPath = Join-Path $profileDir "package.json"
+$pkgJson = $null
+if (Test-Path $pkgJsonPath) { $pkgJson = Get-Content $pkgJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+$bundles = @()
+if ($pkgJson -and $pkgJson.dsh -and $pkgJson.dsh.profile -and $pkgJson.dsh.profile.bundles) { $bundles = @($pkgJson.dsh.profile.bundles) }
+if (($bundles -contains "muteki-preset") -and -not $Force) {
+  throw "market 已安装 muteki-preset（预设本体 bundle），与手动安装二选一。要继续手动安装：先从 dsh.profile.bundles 移除 muteki-preset 并卸载依赖，或加 -Force 自负重复风险。"
+}
 
 # 1) 黑板
 New-Item -ItemType Directory -Force $boardDir | Out-Null
@@ -85,7 +94,16 @@ Write-Host "[2/4] 插件已安装：$profileDir\muteki-orchestrator.mjs"
 #     包带 dsh.bundle / dsh.client 声明，pnpm install 不会移走；右侧栏 UI 与设置路由由此生效。
 $wbSrc = Join-Path $root "plugins\muteki-workbench"
 $wbDst = Join-Path $profileDir "muteki-workbench-pkg"
-if (Test-Path (Join-Path $wbDst "package.json")) {
+# market 已装工作台（进白名单且依赖不是本地 file:）→ 跳过本地拷贝，避免两套包版本错位
+$wbDep = $null
+if ($pkgJson -and $pkgJson.dependencies -and $pkgJson.dependencies.PSObject.Properties.Name -contains "muteki-workbench") {
+  $wbDep = $pkgJson.dependencies."muteki-workbench"
+}
+if (($bundles -contains "muteki-workbench") -and $wbDep -and ("$wbDep" -notlike "file:*")) {
+  Write-Host "[2b/4] 跳过：market 已安装 muteki-workbench（依赖=$wbDep），不用本地拷贝覆盖" -ForegroundColor Yellow
+  $wbDst = $null
+}
+if ($wbDst -and (Test-Path (Join-Path $wbDst "package.json"))) {
   $wbName = (Get-Content (Join-Path $wbDst "package.json") -Raw | ConvertFrom-Json).name
   if ($wbName -ne "muteki-workbench") {
     Write-Host "[2b/4] 跳过：$wbDst 已被其它包占用（name=$wbName）" -ForegroundColor Yellow
@@ -149,11 +167,11 @@ if ($Apply) {
   Add-Content -Path $patchPath -Value "`n$block" -Encoding UTF8
   Write-Host "[4/4] 已追加到 $patchPath（备份：$bak）"
   Write-Host ""
-  Write-Host "下一步：重启 DSH 或新开会话，在预设列表里选「Muteki 蜂群」。" -ForegroundColor Green
+  Write-Host "下一步：完整重启 DSH Desktop（预设注册表在进程启动时建树，只新开会话不够），在预设列表里选「Muteki 蜂群」。" -ForegroundColor Green
 } else {
   Write-Host "[4/4] 未写入 patch（加 -Apply 自动追加）"
   Write-Host ""
   Write-Host "手动步骤：把 $outFile 的内容追加到" -ForegroundColor Yellow
   Write-Host "  $patchPath" -ForegroundColor Yellow
-  Write-Host "然后新开会话，在预设列表里选「Muteki 蜂群」。"
+  Write-Host "然后完整重启 DSH Desktop（只新开会话不够），在预设列表里选「Muteki 蜂群」。"
 }

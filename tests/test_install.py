@@ -98,6 +98,33 @@ class TestInstallSmoke(unittest.TestCase):
         backups = list((self.home / "profiles" / "desktop").glob("cordis.patch.yml.bak-*"))
         self.assertEqual(len(backups), 1)
 
+    def test_market_preset_blocks_manual_install(self) -> None:
+        """market 已装 muteki-preset 时手动安装应拒绝（insert id 会重复）。"""
+        pkg_path = self.home / "profiles" / "desktop" / "package.json"
+        pkg_path.write_text(json.dumps({
+            "dependencies": {"muteki-preset": "github:liaty8/dsh-muteki-preset#path:/plugins/muteki-preset"},
+            "dsh": {"profile": {"bundles": ["muteki-preset"]}},
+        }), encoding="utf-8")
+        proc = self.install(expect=None)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("muteki-preset", proc.stdout + proc.stderr)
+        # 拒绝时不应落任何文件
+        self.assertFalse((self.home / "skills" / "muteki-board" / "board.py").exists())
+
+    def test_market_workbench_skips_local_copy(self) -> None:
+        """market 已装工作台（非 file: 依赖）时跳过 [2b/4]，不覆盖成本地拷贝。"""
+        profile = self.home / "profiles" / "desktop"
+        pkg_path = profile / "package.json"
+        original = {
+            "dependencies": {"muteki-workbench": "github:liaty8/dsh-muteki-preset#path:/plugins/muteki-workbench"},
+            "dsh": {"profile": {"bundles": ["muteki-workbench"]}},
+        }
+        pkg_path.write_text(json.dumps(original), encoding="utf-8")
+        proc = self.install()
+        self.assertIn("market", proc.stdout)
+        self.assertFalse((profile / "muteki-workbench-pkg").exists(), "不应落本地工作台拷贝")
+        self.assertEqual(json.loads(pkg_path.read_text(encoding="utf-8")), original, "market 的依赖声明不应被改写")
+
     def test_config_written_and_installed_board_resolves_custom_storage(self) -> None:
         """A3 端到端：自定义 -StorageDir 安装后，装好的 board.py 不靠环境变量也能找到证据。"""
         cfgdir = self.home / "cfg"
