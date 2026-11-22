@@ -60,7 +60,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
