@@ -51,6 +51,11 @@ headless（无 webServer）时服务端静默不注册，不影响做题。
 
 ## 安装
 
+> **本包只是工作台 UI，不含「Muteki 蜂群」预设本体。** 要完整预设请另装 `muteki-preset`
+> （market 有同名条目；1.13.0 起预设本体由它分发，首启自动铺设黑板技能与配置）。
+
+**market 路径**：市场安装 `muteki-workbench`（+ `muteki-preset` 得完整预设），**完整重启 DSH Desktop**。
+
 **宿主要求**：DSH **0.2.2 系列 ≥ rc.3**（已在 rc.3 / rc.5 实机验证）。`package.json` 的
 `peerDependencies` 已按市场规范声明 `>=0.2.2-rc.3 <0.2.3-0`（比较符带预发布标签，rc 构建不会被
 node-semver 静默排除）；四个宿主包：`dsh-api-session-controller`、`dsh-client-ui-sidebar-right`、
@@ -59,6 +64,7 @@ node-semver 静默排除）；四个宿主包：`dsh-api-session-controller`、`
 `install.ps1` 会自动四步：包复制到 `<profile>/muteki-workbench-pkg/`、junction 到
 `node_modules/muteki-workbench`、profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、
 **把 `muteki-workbench` 加进 `dsh.profile.bundles` 白名单**。重启 DSH 后右侧栏出现页签。
+检测到 market 已装本包（白名单 + 非 `file:` 依赖）时脚本跳过这步，不覆盖 market 版本。
 
 **白名单是关键**：DSH 的 bundle 不按 dependencies 自动发现，只按 `dsh.profile.bundles`
 有序列表加载（见 dsh-app-boot 的 profile 组合逻辑）。只加依赖不进名单 = 服务端插件不挂载、

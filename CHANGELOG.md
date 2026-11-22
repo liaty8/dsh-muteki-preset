@@ -10,6 +10,37 @@
 
 ---
 
+## [1.13.0] - 2026-11-22
+
+分发修复：market 装完只有工作台、没有预设的根因（安装单位是 bundle，预设本体却留在脚本侧）——预设本体做成 market 可装的 `muteki-preset` bundle，并补齐文档措辞、安装去重与一条命令自检。
+
+### Added
+
+- **`muteki-preset` bundle（预设本体，market 可装）**：三条 root insert（`muteki-bootstrap` + `preset-muteki` + `muteki-core`），orchestrator/core 以包导出名 `muteki-preset/orchestrator`、`muteki-preset/core` 挂载（与 helm-d 的 `@adwmc/helm-d/agent` 同款机制）。market 安装 `muteki-preset` + `muteki-workbench` 两个包即得完整预设与工作台，不再需要 `install.ps1`。
+- **`muteki-bootstrap` 首启铺设插件**：自动把 `board.py` + `SKILL.md`（占位符按本机配置回填）铺到 `$DSH_HOME/skills/muteki-board/`（与宿主 skill-filesystem 的发现目录一致，`$DSH_HOME` 解析同宿主序：环境变量 > `~/.dsh`）；`~/.dsh-muteki/config.json` 仅在缺失时创建，已有配置绝不覆盖；版本戳保证同版本内不重写用户改过的 SKILL.md，包升级才重新生成；绝不触碰 board.db / artifacts / settings.json / flags.jsonl；失败只 warn 不拖垮启动。
+- **路径运行时解析**：orchestrator 新增 `resolvePaths()`（显式 config > `config.json` > 内置默认），core 的 `artifactDir` 同序回落 `config.json` 的 `storage_dir`。bundle patch 因此无需安装期占位符；手动安装 patch 显式给值，行为不变。
+- **`scripts/sync_bundle.py` + `tests/test_bundle_sync.py`**：bundle 的 orchestrator/core/assets/patch 全部从 canonical 源生成，漂移校验进回归，两条安装路径永不失同步。
+- **`scripts/selfcheck.py` 一条命令自检**：market/手动两路径的落盘检查（bundle 文件或 patch 段 + profile 根插件、黑板技能、config.json、python 实跑、board.py --help），FAIL/WARN 分级 + 退出码；README 自检节接入。
+- **install.ps1 与 market 去重**：检测到 bundles 已含 `muteki-preset` 时拒绝手动安装（防 insert id 重复）；检测到 market 版工作台（白名单 + 非 `file:` 依赖）时跳过 `[2b/4]`，不改写 market 的依赖声明。
+
+### Fixed
+
+- **README「新开会话才会加载新预设」误导**：预设注册表在进程启动时建树，改为「完整重启 DSH Desktop」（install.ps1 的两处提示同步修正）。此前按 README 新开会话试不出预设，会被误判成装失败。
+- **README 手动安装 snippet 用旧占位符名**（`{{BOARD}}`/`{{STORAGE}}`，1.1.1 已统一为 `{{BOARD_PY}}`/`{{STORAGE_DIR}}`）：照抄会替换不到、SKILL.md 残留占位符。
+- **persona 黑板命令行不再依赖安装期路径替换**：改为 `board.py context` + 指向技能 SKILL.md 的本机完整命令（persona 其余段落本就用裸 `board.py` 表述，语义一致），market/手动两条路径的 persona 完全统一。
+
+### 迁移说明
+
+- 手动安装过的机器改走 market：先删 `cordis.patch.yml` 里手动追加的 `preset-muteki` / `muteki-core` 段，再装 bundle；`config.json`、黑板数据、证据目录全部保留（bootstrap 不覆盖已有配置）。
+- 只想要工作台 UI 的仍只装 `muteki-workbench`；市场条目描述已注明「不含预设本体」。
+
+### 回归
+
+- Python 153（含 bundle 同步 4 例、install 冒烟新增 2 例）；node:test orchestrator 59（含 resolvePaths 新例）+ workbench 14 + bootstrap 5，全绿。
+- `selfcheck.py` 对真实手动安装环境实跑：FAIL=0 WARN=0。
+
+---
+
 ## [1.12.0] - 2026-11-20
 
 比赛抢速度：首解即报可选开关 + 旗标即时横幅（含复制/删除/全部删除与工作台内确认模态）；并修掉两个实机验证抓出的回归（访问检查误伤自家 UI、run 返回 schema 拒收）。

@@ -269,10 +269,26 @@ board.py context --all     # 跨题审计
 ### 兼容性说明（重要）
 
 - 本预设按 **DSH 0.2.2-rc.3** 编成：`tool-agent-team` 行**必须 `disabled: true`**（rc.3 未发布 `agent-team` 包，缺 `agentTeams` 服务会让整个 muteki 预设「加载失败」）。模板已默认禁用；升级到含 agent-team 的 DSH 版本后可删掉该行。
-- `muteki-orchestrator` 用 **相对路径** `./muteki-orchestrator.mjs` 挂载，文件放 profile 根目录。**不要放 `node_modules`**：插件管理器会显示「已安装，未生效」，且 `pnpm install` 会把它移到 `node_modules\.ignored`。
+- `muteki-orchestrator` 手动安装时用 **相对路径** `./muteki-orchestrator.mjs` 挂载，文件放 profile 根目录。**不要放 `node_modules`**：插件管理器会显示「已安装，未生效」，且 `pnpm install` 会把它移到 `node_modules\.ignored`。market 路径（`muteki-preset` bundle）不受此限：它用包导出名 `muteki-preset/orchestrator` 挂载，本来就住在 `node_modules` 里。
 - 如果插件页仍显示「已安装，未生效」：那是插件管理器对「未声明 `dsh.bundle` 的普通依赖」的分类提示；只要预设能加载、会话里有 `muteki_*` 工具，功能就是正常的。
 
-### 方式一：一键脚本（Windows PowerShell）
+### 方式一：DSH Market（推荐）
+
+在 DSH 的插件市场安装两个包：
+
+| 包 | 装到什么 |
+|---|---|
+| `muteki-preset` | **预设本体**：人格 + 派单编排 + 证据捕获 + 黑板技能自动铺设 |
+| `muteki-workbench` | 工作台 UI（右侧栏档位/账本/旗标横幅，可选但推荐） |
+
+装完**完整退出并重启 DSH Desktop**（预设注册表在进程启动时建树，只新开会话不够），新开会话在预设下拉选「Muteki 蜂群」。
+
+- `muteki-preset` 首启自动把 `board.py` + `SKILL.md` 铺到 `$DSH_HOME\skills\muteki-board\`，并在缺 `~/.dsh-muteki/config.json` 时创建（已有配置绝不覆盖，黑板数据绝不触碰）。
+- 需要本机有 Python 3（默认命令 `python`；要改就编辑 `config.json` 的 `python` 字段后重启）。
+- **只装 `muteki-workbench` 不会有预设**——它只是工作台 UI。1.13.0 起预设本体由 `muteki-preset` 分发。
+- 手动安装过（方式二/三）的机器改走 market：先删掉 `cordis.patch.yml` 里手动追加的 `preset-muteki` / `muteki-core` 段（否则 insert id 重复），再装 bundle。
+
+### 方式二：一键脚本（Windows PowerShell）
 
 ```powershell
 git clone https://github.com/liaty8/dsh-muteki-preset.git
@@ -294,17 +310,18 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 .\install.ps1 -Apply     # 会先备份 cordis.patch.yml
 ```
 
-> 安装脚本不会碰你的 `node_modules` 依赖、不会跑 `pnpm install`。改完 patch 后**新开一个会话**才会加载新预设；
-> 但**工作台客户端（`client.js`）改动必须完整重启 DSH**——client bundle 的 rev 在 DSH 启动时计算，Ctrl+R / 新会话都不刷新。
+> 安装脚本不会碰你的 `node_modules` 依赖、不会跑 `pnpm install`。改完 patch 后**完整重启 DSH Desktop** 才会加载新预设（注册表在进程启动时建树，只新开会话不够）；
+> **工作台客户端（`client.js`）改动同样必须完整重启 DSH**——client bundle 的 rev 在 DSH 启动时计算，Ctrl+R / 新会话都不刷新。
+> 脚本检测到 market 已装 `muteki-preset` 时会拒绝重复安装；检测到 market 已装 `muteki-workbench` 时跳过 `[2b/4]`，避免两套工作台错位。
 
-### 方式二：手动安装
+### 方式三：手动安装
 
 ```powershell
 # 1) 黑板技能
 New-Item -ItemType Directory -Force "$env:DSH_HOME\skills\muteki-board" | Out-Null
 Copy-Item .\board\board.py       "$env:DSH_HOME\skills\muteki-board\"
 Get-Content .\board\SKILL.md -Raw |
-  ForEach-Object { $_ -replace '\{\{PYTHON\}\}', 'python' -replace '\{\{BOARD\}\}', "$env:DSH_HOME\skills\muteki-board\board.py" -replace '\{\{STORAGE\}\}', "$env:USERPROFILE\.dsh-muteki\artifacts" } |
+  ForEach-Object { $_ -replace '\{\{PYTHON\}\}', 'python' -replace '\{\{BOARD_PY\}\}', "$env:DSH_HOME\skills\muteki-board\board.py" -replace '\{\{STORAGE_DIR\}\}', "$env:USERPROFILE\.dsh-muteki\artifacts" } |
   Set-Content "$env:DSH_HOME\skills\muteki-board\SKILL.md" -Encoding UTF8
 
 # 2) 插件（放 profile 根目录，用相对路径挂载）
@@ -340,7 +357,13 @@ profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、把 `muteki
 
 ### 安装后自检（加载失败排查）
 
-完整重启 DSH 后新开一个 Muteki 会话，逐项确认：
+先跑一条命令定位落盘问题（market / 手动两条路径都查）：
+
+```powershell
+python scripts\selfcheck.py            # 可加 --profile desktop --dsh-home <你的 DSH home>
+```
+
+再**完整重启 DSH** 后新开一个 Muteki 会话，逐项确认：
 
 1. **预设能加载**：会话工具列表里有 `muteki_run` / `muteki_dispatch` / `muteki_tick` 等。若整个预设「加载失败」，先查 `tool-agent-team` 行是否 `disabled: true`（rc.3 必需，见兼容性说明）。
 2. **黑板可用**：跑一条 `python <board.py 绝对路径> stats`，不报 command not found / 路径错。
@@ -350,7 +373,7 @@ profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、把 `muteki
 
 ### 安装配置（`config.json`）
 
-`install.ps1` 会在 `-ConfigDir`（默认 `%USERPROFILE%\.dsh-muteki`）下生成 `config.json`：
+`install.ps1` 会在 `-ConfigDir`（默认 `%USERPROFILE%\.dsh-muteki`）下生成 `config.json`；market 路径由 `muteki-preset` 的 bootstrap 插件在首启时创建（仅在缺失时，已有配置绝不覆盖）：
 
 ```json
 {
@@ -362,7 +385,7 @@ profile `package.json` 声明 `file:./muteki-workbench-pkg` 依赖、把 `muteki
 }
 ```
 
-`version` 由 `install.ps1` 从 `plugins/dsh-muteki-orchestrator/package.json` 读取后写入，跟着 release 走，不用手填。
+`version` 跟着 release 走，不用手填：`install.ps1` 从 `plugins/dsh-muteki-orchestrator/package.json` 读取写入；market bootstrap 写 `muteki-preset` 自己的包版本。
 
 `board.py` 按 **`MUTEKI_ARTIFACT_DIR` 环境变量 > `config.json` 的 `storage_dir` > 内置默认** 的顺序定位证据目录。
 这解决了「安装时自定义 `-StorageDir`，插件写到自定义目录、`board.py` 却去内置默认找索引」的分叉问题
