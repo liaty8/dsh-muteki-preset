@@ -1132,3 +1132,171 @@ test("resolvePaths: 显式值优先，省略回落 config.json，再回落内置
     assert.deepEqual(readInstallConfig(`${h.root}/definitely-missing.json`), {});
   });
 });
+
+// ── 首解硬 cancel 全覆盖（v1.13.0）：tick/dispatch 脱管 worker 也被收束 ──────────
+
+test("hard cancel: tick 脱管 worker 写回 flag，哨兵自动收束（无需 run 在场）", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { flagAlert: true },
+      worker: async ({ childId, board, cancelled }) => {
+        if (childId !== "child-1") return;
+        await sleep(1200);
+        board(["flag", "flag{watcher}", "--source", "t"]);
+        const guard = Date.now() + 8000;
+        while (!cancelled() && Date.now() < guard) await sleep(50);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-watch"]);
+      h.seedTask("脱管步骤");
+      const tick = await h.call("muteki_tick", { limit: 1 });
+      assert.equal(tick.dispatched.length, 1);
+      const rec = h.activations[0];
+      await Promise.race([
+        rec.result,
+        sleep(8000).then(() => { throw new Error("哨兵没有在 8s 内收束脱管 worker"); }),
+      ]);
+      assert.ok(rec.interrupted, "哨兵应 interrupt 脱管 worker");
+      assert.ok(rec.disposed, "还应发出 dispose 硬收束");
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").filter(Boolean);
+      assert.equal(lines.length, 1, "flag 只落账一次");
+      assert.ok(lines[0].includes("flag{watcher}"));
+    },
+  );
+});
+
+test("hard cancel: run 首解时收束全部活 worker（含 tick 先派出的），hardCancel 报数", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { flagAlert: true },
+      worker: async ({ childId, board, cancelled }) => {
+        const guard = Date.now() + 8000;
+        if (childId === "child-1") {
+          await sleep(1500);
+          board(["flag", "flag{both}", "--source", "t"]);
+        }
+        while (!cancelled() && Date.now() < guard) await sleep(50);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-cancel-all"]);
+      h.seedTask("脱管步骤");
+      h.seedTask("run 批次步骤");
+      await h.call("muteki_tick", { limit: 1 }); // child-1 脱管
+      const out = await h.call("muteki_run", { challenge: "t-cancel-all", limit: 1 }); // child-2
+      assert.equal(out.stoppedReason, "flag");
+      assert.equal(out.solved, true);
+      assert.ok(out.hardCancel, "run 返回应带 hardCancel 收束明细");
+      assert.equal(out.hardCancel.cancelled, 2, "tick 脱管 + run 批次共 2 个都应被收束");
+      assert.deepEqual(out.hardCancel.errors, []);
+      assert.ok(h.activations[0].interrupted, "tick 脱管 worker 应被中断");
+      assert.ok(h.activations[1].interrupted, "run 批次 worker 应被中断");
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").filter(Boolean);
+      assert.equal(lines.length, 1, "run 与哨兵共用去重，flag 不重复落账");
+    },
+  );
+});
+
+test("hard cancel: hardCancelOnFlag=false 尊重配置，哨兵不武装", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { hardCancelOnFlag: false, flagAlert: true },
+      worker: async ({ board }) => {
+        await sleep(300);
+        board(["flag", "flag{nocancel}", "--source", "t"]);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-nocancel"]);
+      h.seedTask("步骤");
+      await h.call("muteki_tick", { limit: 1 });
+      await h.activations[0].result;
+      await sleep(2500); // 给哨兵（若错误武装）足够时间动手
+      assert.ok(!h.activations[0].interrupted, "关闭开关后不应中断");
+      assert.ok(!h.activations[0].disposed, "关闭开关后不应 dispose");
+      let recorded = true;
+      try { readFileSync(h.ledger("flags.jsonl"), "utf8"); } catch { recorded = false; }
+      assert.ok(!recorded, "关闭开关后哨兵不落账");
+    },
+  );
+});
+
+test("hard cancel: interrupt 失败不再静默——errors 留痕 + dispose 兜底收束", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { flagAlert: true },
+      interruptError: "UNAUTHORIZED（测试注入）",
+      worker: async ({ board, cancelled }) => {
+        await sleep(300);
+        board(["flag", "flag{err}", "--source", "t"]);
+        const guard = Date.now() + 8000;
+        while (!cancelled() && Date.now() < guard) await sleep(50);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-cancelerr"]);
+      h.seedTask("步骤");
+      const out = await h.call("muteki_run", { challenge: "t-cancelerr", limit: 1 });
+      assert.equal(out.stoppedReason, "flag");
+      assert.equal(out.hardCancel.cancelled, 1);
+      assert.equal(out.hardCancel.errors.length, 1, "interrupt 失败应进 errors");
+      assert.ok(out.hardCancel.errors[0].includes("UNAUTHORIZED"));
+      assert.ok(h.activations[0].disposed, "interrupt 失败后 dispose 兜底仍应收束");
+      const log = readFileSync(h.ledger("subagents.jsonl"), "utf8");
+      assert.ok(log.includes("cancel-errors"), "失败应留痕 subagents.jsonl");
+    },
+  );
+});
+
+test("hard cancel: bulk 不做全局首解收束（别的题还要打）", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { mode: "bulk", tier: "lite", flagAlert: true },
+      worker: async ({ childId, board }) => {
+        if (childId === "child-1") {
+          await sleep(300);
+          board(["flag", "flag{bulk1}", "--source", "t"]);
+          board(["task", "done", "1"]);
+        } else {
+          await sleep(1500);
+          board(["task", "done", "2"]);
+        }
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-bulk-nocancel"]);
+      h.seedTask("题一");
+      h.seedTask("题二");
+      const out = await h.call("muteki_run", { challenge: "t-bulk-nocancel" });
+      assert.ok(out.bulk, "应走 bulk 路径");
+      assert.ok(!h.activations[1].interrupted, "bulk 里慢 worker 不应被首解收束");
+      assert.ok(!h.activations[1].disposed);
+    },
+  );
+});
+
+test("hard cancel: muteki_dispatch 自由派单同样被哨兵收束", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { flagAlert: true },
+      worker: async ({ board, cancelled }) => {
+        await sleep(1200);
+        board(["flag", "flag{dispatch}", "--source", "t"]);
+        const guard = Date.now() + 8000;
+        while (!cancelled() && Date.now() < guard) await sleep(50);
+      },
+    },
+    async (h) => {
+      h.board(["use", "t-dispatch-watch"]);
+      const out = await h.call("muteki_dispatch", { prompt: "自由步骤：背景+预期证据+停止边界" });
+      assert.equal(out.kind, "activation");
+      await Promise.race([
+        h.activations[0].result,
+        sleep(8000).then(() => { throw new Error("dispatch worker 未被哨兵收束"); }),
+      ]);
+      assert.ok(h.activations[0].interrupted, "dispatch 派出的 worker 应被首解收束");
+      assert.ok(h.activations[0].disposed);
+    },
+  );
+});

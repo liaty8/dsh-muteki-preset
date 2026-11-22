@@ -25,6 +25,10 @@
 
 ### Fixed
 
+- **首解硬 cancel 只覆盖 run 当前批次（实机抓出）**：`muteki_tick` / `muteki_dispatch` 派出的 worker 是 fire-and-forget，出现 flag 后无人中断——继续烧到自然结束，收束消息反复唤醒主会话，同一对话没法切下一题（用户实测：首解 worker 交旗后另一 worker 又跑了 53s 重复取证）。修法：活 worker 登记 + 旗标哨兵（有活 worker 且非 bulk 且开关未关时 1s/2s 轮询），新 flag 出现即收束**全部**活 worker；run 的首解/用户中断路径同样改为全覆盖收束。收束 = interrupt 发信号 + receipt dispose 硬收束兜底（宿主 interrupt 是 fire-and-return 的「暂停当前 turn」语义，dispose 才是硬收束；不用 drainDescendants——它会关闭该会话的派单准入直到会话销毁）。
+- **中断失败不再静默吞掉**：旧 catch 把一切异常当「已完成 no-op」，失败不可见。现在失败进 `subagents.jsonl`（cancel-errors）+ `ctx.logger.warn` + run 返回新增 `hardCancel: {cancelled, errors}`（输出 schema 同步声明，防拒收）。
+- **flags.jsonl 重复落账**：run / bulk / 哨兵的去重集合改为按题共用（`seenFor(challenge)`），同一条 flag 只落账一次，横幅不重复。
+- **run 批间/等令牌期间出现首解仍往已解出的题派新单**：循环顶部加旗标检查，先解出即停。
 - **README「新开会话才会加载新预设」误导**：预设注册表在进程启动时建树，改为「完整重启 DSH Desktop」（install.ps1 的两处提示同步修正）。此前按 README 新开会话试不出预设，会被误判成装失败。
 - **README 手动安装 snippet 用旧占位符名**（`{{BOARD}}`/`{{STORAGE}}`，1.1.1 已统一为 `{{BOARD_PY}}`/`{{STORAGE_DIR}}`）：照抄会替换不到、SKILL.md 残留占位符。
 - **persona 黑板命令行不再依赖安装期路径替换**：改为 `board.py context` + 指向技能 SKILL.md 的本机完整命令（persona 其余段落本就用裸 `board.py` 表述，语义一致），market/手动两条路径的 persona 完全统一。
@@ -32,11 +36,12 @@
 ### 迁移说明
 
 - 手动安装过的机器改走 market：先删 `cordis.patch.yml` 里手动追加的 `preset-muteki` / `muteki-core` 段，再装 bundle；`config.json`、黑板数据、证据目录全部保留（bootstrap 不覆盖已有配置）。
+- 已有手动安装升级到本版：把 `plugins/dsh-muteki-orchestrator/plugin-v13.mjs` 覆盖复制到 `<profile>/muteki-orchestrator.mjs` 后**完整重启 DSH**（patch 段不用动；首解硬 cancel 全覆盖即生效）。
 - 只想要工作台 UI 的仍只装 `muteki-workbench`；市场条目描述已注明「不含预设本体」。
 
 ### 回归
 
-- Python 153（含 bundle 同步 4 例、install 冒烟新增 2 例）；node:test orchestrator 59（含 resolvePaths 新例）+ workbench 14 + bootstrap 5，全绿。
+- Python 153（含 bundle 同步 4 例、install 冒烟新增 2 例）；node:test orchestrator 65（含 resolvePaths 与首解硬 cancel 全覆盖 6 新例）+ workbench 14 + bootstrap 5，全绿。harness mock 升级：receipt 带 dispose/cancelled()，interrupt = abort + dispose（对齐 rc.5 外部后端语义）。
 - `selfcheck.py` 对真实手动安装环境实跑：FAIL=0 WARN=0。
 
 ---

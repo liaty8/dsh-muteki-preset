@@ -225,9 +225,9 @@ board.py context --all     # 跨题审计
 返回值带 `stoppedReason`（`empty` / `flag` / `timeout` / `budget` / `interrupted` / `rounds` / `stagnation`）、`quota` 明细、
 `resumeAt`（下一个令牌时刻）、`waitedMs`、`overridden`、`stagnantRounds`，停下来时能直接看出为什么停、什么时候能继续。
 
-### 5. 首解硬 cancel
+### 5. 首解硬 cancel（全覆盖）
 
-`muteki_run` 每 2 秒轮询 flag；一旦出现**本轮新增**的 flag，立即对同批其余子代理调用 `subagents.interrupt`（`kind: "ancestor"`），不再陪跑。可用 `hardCancelOnFlag: false` 关闭。
+本题一旦出现**新增** flag，立即收束**全部在跑 worker**——不只是 `muteki_run` 当前批次，`muteki_tick` / `muteki_dispatch` 派出的脱管 worker 也一样（活 worker 登记 + 旗标哨兵，`flagAlert` 开启时 1s 轮询、否则 2s）。收束 = `subagents.interrupt`（`kind: "ancestor"`）发信号 + receipt `dispose()` 硬收束兜底；中断失败不再静默，进 `subagents.jsonl` 的 `cancel-errors` 并在 run 返回的 `hardCancel.errors` 里报出。用户中断 run 时同样收束在跑 worker。`hardCancelOnFlag: false` 可关首解收束；**bulk 例外**——flag 按题归属，别的题还要打，不做全局收束。收束后同一对话即可 `board.py use` 切下一题继续，不用新开对话。
 
 ### 6. 额度按题独立，且分「人主导 / 无人值守 / 靶场批量」三套
 

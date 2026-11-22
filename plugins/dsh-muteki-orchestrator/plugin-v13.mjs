@@ -781,7 +781,7 @@ export function apply(ctx, config) {
     typeof flag === "string" ? flag : String(flag?.value ?? flag?.flag ?? flag);
 
   // 首解留痕：新 flag 一出现就追加 flags.jsonl，供工作台横幅即时读取（不用等主会话收束、
-  // 不用人工点子代理）。seen 为本次 run 的去重集合，避免轮询重复写同一条。
+  // 不用人工点子代理）。seen 为去重集合；run/bulk/哨兵共用 seenFor(challenge)，同一条不重复落账。
   const recordNewFlags = (challenge, values, seen) => {
     for (const value of values) {
       if (seen.has(value)) continue;
@@ -792,6 +792,115 @@ export function apply(ctx, config) {
         /* 留痕失败不阻断派单/收束 */
       }
     }
+  };
+
+  // ── 首解硬 cancel：活 worker 登记 + 全覆盖旗标哨兵（v1.13.0）─────────────────
+  // 旧实现只中断「muteki_run 当前批次」：muteki_tick / muteki_dispatch 派出的 worker
+  // 是 fire-and-forget，出现 flag 后没人中断它们——继续烧到自然结束，收束消息还会
+  // 反复唤醒主会话，同一对话没法切下一题。现在凡经 dispatchTask 派出的 worker 都登记：
+  // 只要有活 worker、非 bulk、hardCancelOnFlag 未显式关，哨兵就轮询黑板；新 flag 出现
+  // → 落账横幅 + 中断全部活 worker。muteki_run 批等期间由 run 自己轮询并负责中断
+  // （runPolling 计数让哨兵让位，避免双倍读板）。
+  const liveWorkers = new Map(); // childId → { parent, challenge, cwd, activation }
+  const flagSeenByChallenge = new Map(); // challenge → Set
+  const seenFor = (challenge) => {
+    let seen = flagSeenByChallenge.get(challenge);
+    if (!seen) {
+      seen = new Set();
+      flagSeenByChallenge.set(challenge, seen);
+    }
+    return seen;
+  };
+  let watchTimer = null;
+  let watchBaseline = null;
+  let watchCwd = null;
+  let watchChallenge = null;
+  let runPolling = 0;
+
+  /** 中断全部活 worker：interrupt 发信号 + dispose 硬收束；失败不再静默吞掉。 */
+  const cancelAllWorkers = (reason) => {
+    const subagents = ctx.get("subagents");
+    let cancelled = 0;
+    const errors = [];
+    for (const [childId, worker] of liveWorkers) {
+      try {
+        // interrupt 是 fire-and-return：信号立即发出，已收束的目标是可接受的 no-op。
+        subagents?.interrupt(childId, { kind: "ancestor", agent: worker.parent });
+      } catch (err) {
+        errors.push(`interrupt ${childId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        // interrupt 语义是「暂停当前 turn、保留子代理」；dispose 才是硬收束。
+        // close 事务幂等：interrupt 内部已 dispose 过时，这里是同一笔。
+        const disposal = worker.activation?.dispose?.();
+        if (disposal && typeof disposal.catch === "function") {
+          disposal.catch((err) => logSubagent("cancel-errors", { reason, errors: [`dispose ${childId}: ${String(err)}`] }));
+        }
+      } catch (err) {
+        errors.push(`dispose ${childId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      cancelled += 1;
+    }
+    if (errors.length) {
+      logSubagent("cancel-errors", { reason, errors });
+      try {
+        ctx.logger?.warn?.("muteki: %d 个 worker 中断失败（%s）：%s", errors.length, reason, errors.join("; "));
+      } catch { /* 日志也不许抛 */ }
+    }
+    return { cancelled, errors };
+  };
+
+  const stopWatch = () => {
+    if (watchTimer !== null) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+    watchBaseline = null;
+  };
+  const hardCancelArmed = () => resolveLimits(cfg()).mode !== "bulk" && cfg().hardCancelOnFlag !== false;
+  /** flag 路径专用：hardCancelOnFlag=false 时尊重配置不收 worker（用户中断路径不受此开关影响）。 */
+  const cancelOnFlag = () => (cfg().hardCancelOnFlag !== false ? cancelAllWorkers("flag") : null);
+  const watchTick = () => {
+    if (liveWorkers.size === 0 || !hardCancelArmed()) {
+      stopWatch();
+      return;
+    }
+    if (runPolling > 0) return; // run 批等中：run 负责轮询与中断
+    const data = boardJson(watchCwd);
+    const vals = (Array.isArray(data?.flags) ? data.flags : []).map(flagValue);
+    // 用户中途 board use 切题：旧 baseline 对新题无效，重快照而不是误收束。
+    const ch = typeof data?.challenge === "string" && data.challenge ? data.challenge : watchChallenge;
+    if (ch !== watchChallenge) {
+      watchChallenge = ch;
+      watchBaseline = new Set(vals);
+      return;
+    }
+    const fresh = vals.filter((v) => !watchBaseline.has(v));
+    if (fresh.length === 0) return;
+    for (const v of fresh) watchBaseline.add(v);
+    recordNewFlags(watchChallenge, fresh, seenFor(watchChallenge));
+    cancelOnFlag();
+  };
+  /** 派单前调用：登记空时快照 baseline（极快 worker 可能在 startActivation 返回前就写回 flag）。 */
+  const armWatch = (cwd, challenge) => {
+    if (!hardCancelArmed()) return;
+    if (liveWorkers.size === 0 || challenge !== watchChallenge || cwd !== watchCwd) {
+      watchBaseline = new Set(knownFlags(cwd).map(flagValue));
+      watchCwd = cwd;
+      watchChallenge = challenge;
+    }
+    if (watchTimer === null) {
+      watchTimer = setInterval(watchTick, cfg().flagAlert ? 1000 : 2000);
+      watchTimer.unref?.();
+    }
+  };
+  const trackWorker = (activation, parent, challenge, cwd) => {
+    liveWorkers.set(activation.childId, { parent, challenge, cwd, activation });
+    const result = activation.result?.promise ?? activation.result;
+    Promise.resolve(result).catch(() => {}).finally(() => {
+      liveWorkers.delete(activation.childId);
+      if (liveWorkers.size === 0) stopWatch();
+    });
   };
 
   const openReviews = (cwd) => {
@@ -867,6 +976,7 @@ ${contextText}
     const claim = runBoard(["task", "claim", String(task.id), "--owner", parent.id], cwd);
     if (claim.status !== 0) return null;
     notePending(challenge);
+    armWatch(cwd, challenge);
     const activation = await ctx.get("subagents").startActivation({
       provider: "spawn",
       label: opts.bulk ? `bulk-t${task.id}` : `tick-t${task.id}`,
@@ -880,6 +990,7 @@ ${contextText}
         : {}),
     });
     noteWorker(activation.childId, challenge);
+    trackWorker(activation, parent, challenge, cwd);
     recordRun(challenge);
     return activation;
   };
@@ -895,7 +1006,7 @@ ${contextText}
     const attempts = new Map();
     const dispatched = [];
     const solvedFlags = new Set();
-    const flagSeen = new Set();
+    const flagSeen = seenFor(challenge);
     // 首解即报：run 级 baseline + 1s 旗标守望——worker 写回 flag 的瞬间就落账供横幅显示，
     // 不等该 worker 跑完（bulk 里别的题还在跑，人要先看到已解出的 flag）。
     const bulkBaseline = new Set(knownFlags(cwd).map(flagValue));
@@ -1037,7 +1148,7 @@ ${contextText}
     description:
       "派发一个 Muteki 子代理执行一个有界 Step。可选先认领 lane（同一目标同时只允许一个执行者），" +
       "并受额度闸门约束（每小时派单/成本 + 整题累计总闸，按 mode 取预设）。子代理是全新上下文，不会继承当前会话历史；" +
-      "任务描述要自带背景、预期证据和停止边界。",
+      "任务描述要自带背景、预期证据和停止边界。派出的 worker 受首解硬 cancel 保护：本题出现新 flag 时自动中断（bulk 除外）。",
     parameters: {
       prompt: {
         type: "string",
@@ -1137,6 +1248,7 @@ ${contextText}
       }
 
       notePending(challenge);
+      armWatch(cwd, challenge);
       const activation = await subagents.startActivation({
         provider: "spawn",
         label: args.name || "muteki-worker",
@@ -1152,6 +1264,7 @@ ${contextText}
       });
 
       noteWorker(activation.childId, challenge);
+      trackWorker(activation, parent, challenge, cwd);
       recordRun(challenge);
       return { kind: "activation", childId: activation.childId, name: activation.name };
     },
@@ -1161,7 +1274,8 @@ ${contextText}
     name: "muteki_tick",
     description:
       "驱动一轮 Muteki 调度：从黑板任务队列取最高优先级的 open 任务（最多 limit 个），" +
-      "原子认领后各派一个全新上下文的子代理执行，返回派单结果。子代理结束后会把结论写回黑板并把任务标 done。",
+      "原子认领后各派一个全新上下文的子代理执行，返回派单结果。子代理结束后会把结论写回黑板并把任务标 done。" +
+      "派出的 worker 受首解硬 cancel 保护：本题出现新 flag 时自动中断，不用人工逐个收（bulk 除外）。",
     parameters: {
       limit: {
         type: "number",
@@ -1258,6 +1372,7 @@ ${contextText}
     description:
       "自动循环驱动 Muteki 蜂群：反复从任务队列认领 open 任务并派子代理，等这一批完成后检查黑板，" +
       "队列空、出现 flag、超时、额度用尽、用户中断（interrupted）或连续多轮无进展（stagnation）就停止，返回 stoppedReason、quota 明细与 resumeAt。" +
+      "首解/中断时硬收束全部在跑 worker（含 tick/dispatch 派出的），收束结果见 hardCancel；hardCancelOnFlag=false 可关首解收束。" +
       "mode=bulk 时改走靶场批量路径：完成驱动并发池（tier lite/standard/max = 池 4/8/16），任一 worker 结束立刻补派，" +
       "flag 按题归属、不做全局首解 cancel、无停滞熔断；整批题共用一个 challenge，适合一次打几十上百道独立题。" +
       "派单速率用令牌桶（开局可突发 burstRuns 个，之后按 maxRunsPerHour 回填）；" +
@@ -1340,6 +1455,15 @@ ${contextText}
           // 首解即报：是否解出 flag + 给主会话的下一步提示（跳过 review 直接报 flag）
           solved: { type: "boolean" },
           advice: { type: "string" },
+          // 首解/用户中断时发出的 worker 收束（覆盖 tick/dispatch 派出的活 worker）
+          hardCancel: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              cancelled: { type: "number", required: true },
+              errors: { type: "array", required: true, items: { type: "string" } },
+            },
+          },
           bulk: {
             type: "object",
             additionalProperties: false,
@@ -1375,6 +1499,11 @@ ${contextText}
               : "") +
             (value.stoppedReason === "interrupted"
               ? "\n被用户中断而停止（不是额度用尽）；未做完的任务已释放回队列，可再跑一次 muteki_run 继续。"
+              : "") +
+            (value.hardCancel
+              ? `
+首解硬收束：已向 ${value.hardCancel.cancelled} 个在跑 worker 发出中断（含 tick/dispatch 派出的）` +
+                (value.hardCancel.errors.length ? `；${value.hardCancel.errors.length} 个失败已留痕 subagents.jsonl` : "")
               : "") +
             (value.advice ? `\n${value.advice}` : "") +
             (value.quota
@@ -1420,17 +1549,18 @@ ${contextText}
       const baseline = new Set(knownFlags(cwd).map(flagValue));
       const freshFlags = () =>
         knownFlags(cwd).filter((flag) => !baseline.has(flagValue(flag)));
-      const flagSeen = new Set();
-      // 检测到新 flag 的同时落账 flags.jsonl（工作台横幅即时可见）
+      // 检测到新 flag 的同时落账 flags.jsonl（工作台横幅即时可见）；
+      // seen 与哨兵/bulk 共用，同一条 flag 不会重复落账。
       const alertFlags = () => {
         const vals = freshFlags().map(flagValue);
-        recordNewFlags(challenge, vals, flagSeen);
+        recordNewFlags(challenge, vals, seenFor(challenge));
         return vals;
       };
 
       const dispatched = [];
       let rounds = 0;
       let stoppedReason = "empty";
+      let hardCancel = null;
       let waitedMs = 0;
       let overridden = false;
       let overrideNote = "";
@@ -1464,6 +1594,12 @@ ${contextText}
         }
         if (!gate.state.ok) {
           stoppedReason = "budget";
+          break;
+        }
+        // 批间/等令牌期间哨兵可能已报首解：别往已解出的题再派新单。
+        if (alertFlags().length > 0) {
+          hardCancel = cancelOnFlag();
+          stoppedReason = "flag";
           break;
         }
         // 本轮批次内的额度判定：人工授权只放宽「派单令牌」，成本与整题总闸照常拦。
@@ -1506,7 +1642,7 @@ ${contextText}
           break;
         }
 
-        // 等这一批：正常完成，或任一子代理写回 flag 后立即中断其余（首解硬 cancel）。
+        // 等这一批：正常完成、任一子代理写回 flag（首解硬 cancel）、或用户中断。
         let batchDone = false;
         const resultsPromise = Promise.allSettled(batch.map((item) => item.activation.result)).then(() => {
           batchDone = true;
@@ -1516,30 +1652,38 @@ ${contextText}
           const interval = cfg().flagAlert ? 1000 : 2000;
           while (!batchDone) {
             await sleep(interval);
-            if (alertFlags().length > 0) return true;
+            if (exec.signal?.aborted) return "aborted";
+            if (alertFlags().length > 0) return "flag";
           }
-          return alertFlags().length > 0;
+          if (exec.signal?.aborted) return "aborted";
+          return alertFlags().length > 0 ? "flag" : "done";
         })();
-        const winner = await Promise.race([
-          resultsPromise.then(() => "done"),
-          flagPromise.then((hit) => (hit ? "flag" : "done")),
-        ]);
+        runPolling += 1;
+        let winner;
+        try {
+          winner = await Promise.race([
+            resultsPromise.then(() => "done"),
+            flagPromise,
+          ]);
+        } finally {
+          runPolling -= 1;
+        }
+        if (winner === "aborted" || exec.signal?.aborted) {
+          // 用户中断也要把在跑 worker 收掉，否则它们继续烧额度、收束消息反复唤醒主会话。
+          hardCancel = cancelAllWorkers("interrupted");
+          stoppedReason = "interrupted";
+          break;
+        }
         if (winner === "flag") {
-          if (cfg().hardCancelOnFlag !== false) {
-            for (const item of batch) {
-              try {
-                subagents.interrupt(item.activation.childId, { kind: "ancestor", agent: parent });
-              } catch {
-                /* 已完成或已释放的子代理：中断是可接受的 no-op */
-              }
-            }
-          }
+          // 中断范围是全部活 worker（含 tick/dispatch 派出的），不只是本批。
+          hardCancel = cancelOnFlag();
           stoppedReason = "flag";
           break;
         }
 
         const flags = alertFlags();
         if (flags.length > 0) {
+          hardCancel = cancelOnFlag();
           stoppedReason = "flag";
           break;
         }
@@ -1608,6 +1752,8 @@ ${contextText}
         overrideRequested,
         overrideNote,
         stagnantRounds,
+        // 首解/中断时实际发出的 worker 收束（含 tick/dispatch 派出的）；errors 非空=有中断失败留痕
+        ...(hardCancel ? { hardCancel } : {}),
       };
       } finally {
         // 无论正常结束、超时还是被用户中断，都把本轮「派出但没做完」的任务

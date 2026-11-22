@@ -143,7 +143,7 @@ export async function createHarness(options = {}) {
       const childId = `child-${activations.length + 1}`;
       const name = opts.name || opts.label || "worker";
       const cwd = opts.cwd || ws;
-      const record = { childId, name, opts, cwd, interrupted: false, error: null };
+      const record = { childId, name, opts, cwd, interrupted: false, disposed: false, error: null };
       activations.push(record);
       const info = {
         runId: childId,
@@ -153,7 +153,18 @@ export async function createHarness(options = {}) {
         parentSessionId: "parent-test",
       };
       emit("subagent/start", info);
-      record.result = (async () => {
+      // rc.5 的 receipt 带 dispose()（硬收束）；interrupt 对外部后端 = abort + dispose。
+      // mock 用 deferred 模拟：dispose 立即结算 result，worker 协程靠 cancelled() 自觉退出。
+      const disposed = Promise.withResolvers();
+      record.dispose = () => {
+        if (record.disposed) return Promise.resolve();
+        record.disposed = true;
+        emit("subagent/end", { ...info, stopReason: "aborted" });
+        disposed.resolve({ ok: false, childId, disposed: true });
+        return Promise.resolve();
+      };
+      record.cancelled = () => record.interrupted || record.disposed;
+      const work = (async () => {
         if (options.workerDelayMs) {
           await new Promise((resolve) => setTimeout(resolve, options.workerDelayMs));
         }
@@ -164,6 +175,7 @@ export async function createHarness(options = {}) {
             cwd,
             prompt: opts.prompt?.[0]?.text || "",
             board: (argv, c) => board(argv, c || cwd),
+            cancelled: record.cancelled,
           });
         } catch (err) {
           record.error = String(err);
@@ -173,11 +185,15 @@ export async function createHarness(options = {}) {
         emit("subagent/end", { ...info, stopReason: "completed", ...(options.endInfo || {}) });
         return { ok: true, childId };
       })();
+      record.result = Promise.race([work, disposed.promise]);
       return record;
     },
     interrupt(childId) {
       const record = activations.find((item) => item.childId === childId);
-      if (record) record.interrupted = true;
+      if (!record) return;
+      if (options.interruptError) throw new Error(options.interruptError);
+      record.interrupted = true;
+      record.dispose();
     },
   };
 
