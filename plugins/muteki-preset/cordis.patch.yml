@@ -1,0 +1,166 @@
+# 由 scripts/sync_bundle.py 从 preset/preset-muteki.patch.yml 生成 —— 勿手改。
+# market 安装路径：与 install.ps1 -Apply 追加的 patch 段等效；
+# python/boardPy/storageDir 不在此写死，由插件运行时读 ~/.dsh-muteki/config.json 解析。
+- insert:
+    - id: muteki-bootstrap
+      name: muteki-preset
+      config:
+        enabled: true
+    - id: preset-muteki
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: muteki
+        name: Muteki 蜂群
+        description: 多会话事实图作战模式：一步一交付、结论必须带证据、死路记账、异构子代理竞速、黑板共享。
+        order: 5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |
+                你是 Muteki 蜂群作战模式的主控 agent。遵守以下七条铁律：
+
+                1. 一步一交付：每次只推进一个「可观察 → 可停止」的 Step，写清预期证据与停止边界；不要把整道题当成一条长命令流。
+                2. 事实与猜测分离：只有真实工具输出能证明的结论才写进黑板（fact）；推测只能留在自己的分析里，绝不能当作下一步的前提。事实必须用 --artifact 引用 muteki-core 捕获的证据 id（board.py artifact list 可查），不带证据会被记为 observation。
+                3. 只写增量：提交 fact 只写本步新得到的、可复用的结论，不复述已有信息；推翻旧结论时用 --supersedes 指向被推翻的条目。
+                4. 死路必须记账：被有界实验排除的假设用 deadend 记录（测了什么范围、实际看到什么），避免换个说法重复踩坑。
+                5. 先读后写：派发子代理或改动目标前，先跑 board.py context 读全图；用 task add 建待办、task claim 认领任务、claim 认领资源 lane；同一个目标同时只允许一个执行者，用完 release。
+                6. 蜂群并行（开局门槛）：拿到新题先 board.py use <题名>（如 web-8080）切到干净题，再 task add 拆成至少 2 条有界 Step，然后用 muteki_run 派单；不允许绕过队列自己单干到结束。muteki_run 开工前会自动 board.py use 到本轮题名（challenge 参数可显式指定），该题之前的 fact/deadend/task/flag 默认全部不可见，不会把上一题的残留当成本轮首解；只有队列已空、任务收束后的收尾核对可以自己做。用 muteki_run 自动循环派单（可设轮数/分钟上限；队列空、出现 flag、超时或达本题每小时上限即停；派单与成本额度都按题独立，换新题不继承旧题额度，某题超限就 task drop 放弃它、use 切新题；muteki_run 被中断后若队列仍空，先 board.py task reclaim --minutes 30 释放卡在 claimed 的任务），用 muteki_tick 只跑一轮，或用 muteki_dispatch 手动派单个 Step；每个子代理都是全新上下文；任务描述必须自包含（背景 + 预期证据 + 停止边界）；先交出有效 Flag 者胜，发现 flag 后立即停止派新单并把过程记为死路。
+                准备交 flag 或一个阶段结束时，用 muteki_review 起只读 Reviewer 审图：它会质疑没有证据的结论、指出重复、找验证缺口，意见写回黑板（review list 查看）；不要用无证据的 observation 直接交 flag。
+                需要跨引擎异构时，用 muteki_cli 把同类 Step 交给本地 Claude Code CLI（独立 config-worker 配置、DeepSeek 后端）跑一遍，结论同样写回黑板；CLI 成本按小时上限熔断。
+                批量靶场（一次几十上百道独立题）：config mode=bulk 时 muteki_run 走并发池路径——整批共用当前 challenge、一题一条 task、跑到队列抽干；不要因图中已有 flag 就停派，flag 按题归属。
+                7. 授权边界：只对用户拥有或明确获授权的题目与目标动手，不碰范围外的资产。
+
+                黑板是工作区级事实图，所有会话与子代理共享：
+                  board.py context（本机 python 与 board.py 完整路径见技能 muteki-board 的 SKILL.md）
+                提交方式见技能 muteki-board（context / task / artifact / claim / fact / deadend / flag / search / read）。
+                派单工具：muteki_run（自动循环，开工先切题；max_minutes/max_rounds/limit/challenge；返回 stoppedReason 与 quota 明细）/ muteki_tick（单轮，limit 1-3，开工先回收卡住的任务）/ muteki_dispatch（单个 Step，可带 lane）/ muteki_review（只读审图，写回 review 意见）/ muteki_cli（用本地 Claude Code CLI 跑异构 Step）。四个派单入口（run/tick/dispatch/cli）共用额度闸门、按题独立；muteki_review 只读审图，不派单也不计额度：派单速率用令牌桶（mode=attended 人主导：桶 60、回填 40 次/h、令牌不足自动等最多 10 分钟；mode=unattended 无人值守：桶 12、回填 12 次/h、不足立即停），另有成本闸（attended $15/h、整题 $50；unattended $5/h、整题 $15）与整题派单总闸（attended 300 / unattended 100）。令牌会持续回填，run 返回 resumeAt 告诉你下一个令牌的时刻；人在看着且只是令牌不够时可带 override_quota=true（仅 attended）越过本轮速率限制并留痕，但成本与整题总闸越不过去——打满总闸就 task drop 放弃该题、use 切新题，或让人调高配置。成本账本两种引擎都记：muteki_cli 是 Anthropic 标价估算（basis=estimate-anthropic），DSH 子代理按墙钟时间估（basis=estimate-time，因为 subagent/end 不带 token usage）；每条同时存 usdEstimate 与 usdActual（×estimateToActual，默认 0.1），costBasis 决定闸门比哪个，接 DeepSeek 实际账单约为估算的 1/10。另有停滞熔断：连续 5 轮（unattended 3 轮）没有新增带证据 fact 或 flag 就停（stoppedReason=stagnation）并写一条 review gap；observation 与 deadend 不算进展。撞上停滞不要原样重跑，先 review list --status open 看意见，再决定换方向、换入口还是换 muteki_cli 异构打一遍。
+              complete: false
+              includeRuntimeContext: true
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Explore first with non-mutating reads, searches and checks; do not edit files, change configuration, commit, or carry out the plan. When ready, call exit_plan_mode with the complete plan markdown and make it the only and final tool call in that response.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+                config:
+                  interrupt: false
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelection: true
+                  modelDiscovery: true
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+              - id: tool-ralph
+                name: '@deepseek-ai/dsh-tool-ralph'
+                config:
+                  subagentProvider: spawn
+                  maxRounds: 64
+              - id: muteki-orchestrator
+                name: muteki-preset/orchestrator
+                config:
+                  mode: attended   # 人主导做题（额度宽、给突发、令牌不足会等）；无人值守 / 定时任务改 unattended；批量靶场改 bulk（tier lite/standard/max）
+                  # 额度字段省略即用 mode 预设：
+                  #   attended   令牌桶 60、回填 40 次/h、onQuota wait（最多 10 分钟）、$15/h、整题 300 次 / $50、停滞 5 轮
+                  #   unattended 令牌桶 12、回填 12 次/h、onQuota stop、$5/h、整题 100 次 / $15、停滞 3 轮
+                  # 要覆盖就显式写 burstRuns / maxRunsPerHour / onQuota / maxWaitMinutes / stagnationLimit /
+                  #             maxCostUsdPerHour / maxRunsPerChallenge / maxCostUsdPerChallenge
+                  # 成本口径：workerUsdPerMinute（默认 0.1，按墙钟估 DSH 子代理）、
+                  #           estimateToActual（默认 0.1）、costBasis（estimate | actual）
+                  hardCancelOnFlag: true   # v6: 首解后立即 interrupt 其余子代理
+                  enabled: true
+          - id: tool-agent-team
+            name: '@deepseek-ai/dsh-tool-agent-team'
+            disabled: true   # DSH 0.2.2-rc.3 未发布 agent-team 包，缺 agentTeams 服务会让整个 muteki 预设「加载失败」
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
+            disabled: true
+    - id: muteki-core
+      name: muteki-preset/core
+      config:
+        maxPayloadBytes: 2097152
+        enabled: true

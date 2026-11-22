@@ -86,9 +86,9 @@ export const resolveLimits = (config) => {
 };
 
 export const Config = z.object({
-  python: z.string().default("python"),
-  boardPy: z.string().default(join(homedir(), ".dsh-muteki", "board.py")),
-  storageDir: z.string().default(join(homedir(), ".dsh-muteki", "artifacts")),
+  python: z.string().default("").comment("省略回落 ~/.dsh-muteki/config.json 的 python，再回落 python"),
+  boardPy: z.string().default("").comment("省略回落 config.json 的 board_py，再回落 ~/.dsh-muteki/board.py"),
+  storageDir: z.string().default("").comment("省略回落 config.json 的 storage_dir，再回落 ~/.dsh-muteki/artifacts"),
   mode: z
     .union([z.const("attended"), z.const("unattended"), z.const("bulk")])
     .default("attended")
@@ -160,8 +160,34 @@ export const Config = z.object({
 const HOUR = 3600_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** 安装配置（install.ps1 / muteki-preset bootstrap 写入）；读不到返回空对象。 */
+export function readInstallConfig(file = join(homedir(), ".dsh-muteki", "config.json")) {
+  try {
+    const cfg = JSON.parse(readFileSync(file, "utf8"));
+    return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 路径字段解析：显式 config > ~/.dsh-muteki/config.json > 内置默认。
+ * 手动安装的 patch 三个字段都显式给值，行为不变；market bundle 的 patch
+ * 不带路径（装进 node_modules 后无法预知本机路径），全靠这层回落。
+ */
+export function resolvePaths(config, cfg = readInstallConfig()) {
+  const str = (v) => (typeof v === "string" && v.trim() !== "" ? v : "");
+  return {
+    ...config,
+    python: str(config.python) || str(cfg.python) || "python",
+    boardPy: str(config.boardPy) || str(cfg.board_py) || join(homedir(), ".dsh-muteki", "board.py"),
+    storageDir: str(config.storageDir) || str(cfg.storage_dir) || join(homedir(), ".dsh-muteki", "artifacts"),
+  };
+}
+
 export function apply(ctx, config) {
   if (!config.enabled) return;
+  config = resolvePaths(config);
 
   /** 把模板里的 {{PYTHON}} / {{BOARD}} / {{STORAGE}} 替换成本机配置。 */
   const fillCmd = (text) =>

@@ -25,7 +25,7 @@
                 7. 授权边界：只对用户拥有或明确获授权的题目与目标动手，不碰范围外的资产。
 
                 黑板是工作区级事实图，所有会话与子代理共享：
-                  {{PYTHON}} {{BOARD_PY}} context
+                  board.py context（本机 python 与 board.py 完整路径见技能 muteki-board 的 SKILL.md）
                 提交方式见技能 muteki-board（context / task / artifact / claim / fact / deadend / flag / search / read）。
                 派单工具：muteki_run（自动循环，开工先切题；max_minutes/max_rounds/limit/challenge；返回 stoppedReason 与 quota 明细）/ muteki_tick（单轮，limit 1-3，开工先回收卡住的任务）/ muteki_dispatch（单个 Step，可带 lane）/ muteki_review（只读审图，写回 review 意见）/ muteki_cli（用本地 Claude Code CLI 跑异构 Step）。四个派单入口（run/tick/dispatch/cli）共用额度闸门、按题独立；muteki_review 只读审图，不派单也不计额度：派单速率用令牌桶（mode=attended 人主导：桶 60、回填 40 次/h、令牌不足自动等最多 10 分钟；mode=unattended 无人值守：桶 12、回填 12 次/h、不足立即停），另有成本闸（attended $15/h、整题 $50；unattended $5/h、整题 $15）与整题派单总闸（attended 300 / unattended 100）。令牌会持续回填，run 返回 resumeAt 告诉你下一个令牌的时刻；人在看着且只是令牌不够时可带 override_quota=true（仅 attended）越过本轮速率限制并留痕，但成本与整题总闸越不过去——打满总闸就 task drop 放弃该题、use 切新题，或让人调高配置。成本账本两种引擎都记：muteki_cli 是 Anthropic 标价估算（basis=estimate-anthropic），DSH 子代理按墙钟时间估（basis=estimate-time，因为 subagent/end 不带 token usage）；每条同时存 usdEstimate 与 usdActual（×estimateToActual，默认 0.1），costBasis 决定闸门比哪个，接 DeepSeek 实际账单约为估算的 1/10。另有停滞熔断：连续 5 轮（unattended 3 轮）没有新增带证据 fact 或 flag 就停（stoppedReason=stagnation）并写一条 review gap；observation 与 deadend 不算进展。撞上停滞不要原样重跑，先 review list --status open 看意见，再决定换方向、换入口还是换 muteki_cli 异构打一遍。
               complete: false

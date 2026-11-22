@@ -1100,3 +1100,35 @@ test("bulk: 提示词屏蔽共享 flag 捷径；attended 的 limit 上限仍是 
     },
   );
 });
+// ── 路径解析：显式 config > config.json > 内置默认（v1.13.0 market bundle 路径）──
+
+test("resolvePaths: 显式值优先，省略回落 config.json，再回落内置默认", { skip: SKIP_REASON }, async () => {
+  await withHarness({}, async (h) => {
+    const { resolvePaths, readInstallConfig } = h.mod;
+    const cfg = { python: "py-cfg", board_py: "B2", storage_dir: "S2" };
+    // 手动安装路径：patch 显式给值，config.json 不参与（行为不变）
+    const explicit = resolvePaths({ python: "py-x", boardPy: "B", storageDir: "S" }, cfg);
+    assert.equal(explicit.python, "py-x");
+    assert.equal(explicit.boardPy, "B");
+    assert.equal(explicit.storageDir, "S");
+    // market bundle 路径：patch 不带路径，回落 config.json
+    const fromCfg = resolvePaths({}, cfg);
+    assert.equal(fromCfg.python, "py-cfg");
+    assert.equal(fromCfg.boardPy, "B2");
+    assert.equal(fromCfg.storageDir, "S2");
+    // config.json 也没有 → 内置默认
+    const defaults = resolvePaths({}, {});
+    assert.equal(defaults.python, "python");
+    assert.ok(defaults.boardPy.endsWith("board.py"));
+    assert.ok(defaults.storageDir.endsWith("artifacts"));
+    // 空串/空白视为省略
+    const blank = resolvePaths({ python: "  ", boardPy: "", storageDir: "" }, cfg);
+    assert.equal(blank.python, "py-cfg");
+    assert.equal(blank.boardPy, "B2");
+    assert.equal(blank.storageDir, "S2");
+    // 其余字段原样保留
+    assert.equal(resolvePaths({ mode: "bulk", enabled: true }, cfg).mode, "bulk");
+    // readInstallConfig：文件不存在/坏 JSON 都返回 {}
+    assert.deepEqual(readInstallConfig(`${h.root}/definitely-missing.json`), {});
+  });
+});

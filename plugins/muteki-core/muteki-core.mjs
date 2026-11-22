@@ -12,7 +12,7 @@
  *  - 单个 payload 超过 maxPayloadBytes 时截断 value/content；
  *  - 不注册任何模型可见工具，不占用上下文。
  */
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
@@ -22,7 +22,7 @@ export const name = 'muteki-core'
 export const inject = ['tools']
 
 export const Config = z.object({
-  artifactDir: z.string().default(join(homedir(), '.dsh-muteki', 'artifacts')),
+  artifactDir: z.string().default('').comment('省略回落 ~/.dsh-muteki/config.json 的 storage_dir，再回落 ~/.dsh-muteki/artifacts'),
   maxPayloadBytes: z.natural().default(2 * 1024 * 1024),
   enabled: z.boolean().default(true),
 })
@@ -56,9 +56,20 @@ function safeStringify(value) {
   }
 }
 
+/** 安装配置里的 storage_dir（与 orchestrator 同一证据目录）；读不到返回空串。 */
+function configuredStorageDir() {
+  try {
+    const cfg = JSON.parse(readFileSync(join(homedir(), '.dsh-muteki', 'config.json'), 'utf8'))
+    return cfg && typeof cfg.storage_dir === 'string' ? cfg.storage_dir : ''
+  } catch {
+    return ''
+  }
+}
+
 export function apply(ctx, config) {
   if (config && config.enabled === false) return
-  const dir = String((config && config.artifactDir) || join(homedir(), '.dsh-muteki', 'artifacts'))
+  // 显式 config > config.json 的 storage_dir > 内置默认（market bundle 的 patch 不带路径）
+  const dir = String((config && config.artifactDir) || configuredStorageDir() || join(homedir(), '.dsh-muteki', 'artifacts'))
   const maxBytes = Number((config && config.maxPayloadBytes) || 2 * 1024 * 1024)
   const artifactsDir = join(dir, 'artifacts')
   const indexPath = join(dir, 'index.jsonl')
