@@ -310,7 +310,8 @@ test("bucket: 时间过去后按速率回填，不用等满一小时", { skip: S
 
 test("run: onQuota=wait 会等令牌回填并继续派下一轮", { skip: SKIP_REASON }, async () => {
   await withHarness(
-    { config: { burstRuns: 1, maxRunsPerHour: 3600, maxWaitMinutes: 1, maxRunsPerChallenge: 100 } },
+    // 回填放慢到 10s/枚：首轮含收尾扫板等耗时，3600/h（1s/枚）会与首轮耗时竞态导致偶发 waitedMs=0。
+    { config: { burstRuns: 1, maxRunsPerHour: 360, maxWaitMinutes: 1, maxRunsPerChallenge: 100 } },
     async (h) => {
       h.board(["use", "t-wait"]);
       h.seedTask("任务一");
@@ -1198,7 +1199,7 @@ test("hard cancel: run 首解时收束全部活 worker（含 tick 先派出的�
   );
 });
 
-test("hard cancel: hardCancelOnFlag=false 尊重配置，哨兵不武装", { skip: SKIP_REASON }, async () => {
+test("hard cancel: hardCancelOnFlag=false 尊重配置——不收束但仍留痕横幅", { skip: SKIP_REASON }, async () => {
   await withHarness(
     {
       config: { hardCancelOnFlag: false, flagAlert: true },
@@ -1212,12 +1213,12 @@ test("hard cancel: hardCancelOnFlag=false 尊重配置，哨兵不武装", { ski
       h.seedTask("步骤");
       await h.call("muteki_tick", { limit: 1 });
       await h.activations[0].result;
-      await sleep(2500); // 给哨兵（若错误武装）足够时间动手
+      await sleep(2500); // 给哨兵足够时间落账（若错误收束也会在这段时间动手）
       assert.ok(!h.activations[0].interrupted, "关闭开关后不应中断");
       assert.ok(!h.activations[0].disposed, "关闭开关后不应 dispose");
-      let recorded = true;
-      try { readFileSync(h.ledger("flags.jsonl"), "utf8"); } catch { recorded = false; }
-      assert.ok(!recorded, "关闭开关后哨兵不落账");
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").filter(Boolean);
+      assert.equal(lines.length, 1, "关开关只关收束，横幅留痕仍应落账一次");
+      assert.ok(lines[0].includes("flag{nocancel}"));
     },
   );
 });
@@ -1272,6 +1273,8 @@ test("hard cancel: bulk 不做全局首解收束（别的题还要打）", { ski
       assert.ok(out.bulk, "应走 bulk 路径");
       assert.ok(!h.activations[1].interrupted, "bulk 里慢 worker 不应被首解收束");
       assert.ok(!h.activations[1].disposed);
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").filter(Boolean);
+      assert.ok(lines.some((l) => l.includes("flag{bulk1}")), "bulk 不做全局收束但首解仍应留痕横幅");
     },
   );
 });
@@ -1297,6 +1300,49 @@ test("hard cancel: muteki_dispatch 自由派单同样被哨兵收束", { skip: S
       ]);
       assert.ok(h.activations[0].interrupted, "dispatch 派出的 worker 应被首解收束");
       assert.ok(h.activations[0].disposed);
+    },
+  );
+});
+
+test("hard cancel: 工作台 settings.json 覆盖成 bulk 时，dispatch 仍留痕但不收束", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    {
+      config: { flagAlert: true }, // patch 意图 attended，被工作台遗留覆盖压成 bulk
+      worker: async ({ board, cancelled }) => {
+        await sleep(300);
+        board(["flag", "flag{bulkoverride}", "--source", "t"]);
+        const guard = Date.now() + 4000;
+        while (!cancelled() && Date.now() < guard) await sleep(50);
+      },
+    },
+    async (h) => {
+      writeJson(h.ledger("settings.json"), { mode: "bulk" });
+      h.board(["use", "t-bulk-override"]);
+      const out = await h.call("muteki_dispatch", { prompt: "步骤：背景+证据+边界" });
+      assert.equal(out.kind, "activation");
+      await h.activations[0].result;
+      await sleep(1500);
+      assert.ok(!h.activations[0].disposed, "bulk 覆盖下不应硬收束");
+      const lines = readFileSync(h.ledger("flags.jsonl"), "utf8").trim().split("\n").filter(Boolean);
+      assert.ok(lines.some((l) => l.includes("flag{bulkoverride}")), "bulk 覆盖下首解仍应留痕（横幅不静默失效）");
+      const slog = readFileSync(h.ledger("subagents.jsonl"), "utf8");
+      assert.ok(slog.includes('"kind":"watch-arm"') && slog.includes('"mode":"bulk"') && slog.includes('"cancel":"off"'), "armWatch 应落 subagents.jsonl 暴露 bulk/关收束（桌面 console 不落盘）");
+    },
+  );
+});
+
+test("cwd 默认: 省略 cwd 时用会话工作目录（workingDirectory），回显 cwd/challenge", { skip: SKIP_REASON }, async () => {
+  await withHarness(
+    { worker: async () => {} },
+    async (h) => {
+      h.board(["use", "t-cwd-default"]);
+      // 不经 h.call（它会注入 cwd），直接 execute 以省略 args.cwd，复现「派单没带 cwd」
+      const out = await h.tools.get("muteki_dispatch").execute({ prompt: "步骤：背景+证据+边界" }, h.exec);
+      assert.equal(out.cwd, h.ws, "cwd 默认应落到会话工作目录而非服务进程目录");
+      assert.equal(out.challenge, "t-cwd-default", "challenge 应读会话目录的板，不是 default");
+      const tick = await h.tools.get("muteki_tick").execute({ limit: 1 }, h.exec);
+      assert.equal(tick.cwd, h.ws);
+      assert.equal(tick.challenge, "t-cwd-default");
     },
   );
 });

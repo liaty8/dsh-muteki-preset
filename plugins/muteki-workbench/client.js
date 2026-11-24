@@ -221,7 +221,9 @@ window.__ModuleLoader__.load({
     function normalize(o) {
       var out = {};
       if (o.mode) out.mode = o.mode;
+      // tier 标签跟数值走：草稿丢 tier 但数值还在时按数值反推，避免保存后 tier 被抹掉。
       if (o.tier) out.tier = o.tier;
+      else if (hasNums(o)) out.tier = tierOf(o);
       if (o.flagAlert) out.flagAlert = true;
       out.autoOpenPane = o.autoOpenPane !== false;
       out.currency = o.currency === "USD" ? "USD" : "CNY";

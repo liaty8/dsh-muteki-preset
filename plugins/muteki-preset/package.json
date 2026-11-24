@@ -1,6 +1,6 @@
 {
   "name": "muteki-preset",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "description": "Muteki 蜂群预设本体：多会话事实图作战模式（黑板 + 派单编排 + 证据捕获）。market 安装即得完整预设；首次启动自动铺设 muteki-board 技能与 ~/.dsh-muteki/config.json。工作台 UI 另装 muteki-workbench。",
   "repository": {
     "type": "git",
@@ -17,7 +17,9 @@
   },
   "dsh": {
     "bundle": {
-      "patch": ["./cordis.patch.yml"]
+      "patch": [
+        "./cordis.patch.yml"
+      ]
     }
   },
   "peerDependencies": {
@@ -30,5 +32,12 @@
     "@deepseek-ai/dsh-workflow-ptc": ">=0.2.2-rc.3 <0.2.3-0",
     "@deepseek-ai/dsh-tool-ralph": ">=0.2.2-rc.3 <0.2.3-0"
   },
-  "keywords": ["dsh", "dsh-plugin", "muteki", "ctf", "preset", "orchestrator"]
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "muteki",
+    "ctf",
+    "preset",
+    "orchestrator"
+  ]
 }

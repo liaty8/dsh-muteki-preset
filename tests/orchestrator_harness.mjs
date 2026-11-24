@@ -29,6 +29,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { format } from "node:util";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = dirname(HERE);
@@ -197,10 +198,20 @@ export async function createHarness(options = {}) {
     },
   };
 
+  const logs = [];
   const ctx = {
     tools: { register: (tool) => tools.set(tool.name, tool) },
-    get: (key) => (key === "subagents" ? subagents : undefined),
+    get: (key) => {
+      if (key === "subagents") return subagents;
+      // 会话工作目录服务：与 dsh-subagent 省略 cwd 时同源，供 cwd 默认值回归用。
+      if (key === "workingDirectory") return { ensure: async () => ws };
+      return undefined;
+    },
     on: (event, fn) => events.push([event, fn]),
+    logger: {
+      info: (...a) => logs.push(["info", format(...a)]),
+      warn: (...a) => logs.push(["warn", format(...a)]),
+    },
   };
 
   const config = {
@@ -261,6 +272,7 @@ export async function createHarness(options = {}) {
     tools,
     config,
     events,
+    logs,
     activations,
     emit,
     board,

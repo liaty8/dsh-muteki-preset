@@ -10,6 +10,28 @@
 
 ---
 
+## [1.13.1] - 2026-11-24
+
+首解即报实机失效三因修复（派单误读服务进程目录的板 / bulk 覆盖静默关哨兵 / 极快 worker 丢横幅），并把哨兵状态做成桌面可取证；顺带修工作台保存抹掉 tier 标签。
+
+### Fixed
+
+- **派单省略 cwd 误读服务进程目录的板（实机抓出）**：`args.cwd || process.cwd()` 改为 `args.cwd || 会话工作目录 || process.cwd()`，会话工作目录取 `workingDirectory.ensure(agent)`（与 dsh-subagent 省略 cwd 时同源）。旧默认下编排器读 profile 目录的板、worker 写会话目录的板，首解永远看不到；dispatch / tick / run / review / cli 五处同修。
+- **bulk / hardCancelOnFlag=false 静默关掉首解留痕**：哨兵留痕与硬收束解耦——只要有活 worker 就轮询落 `flags.jsonl` 点亮横幅，bulk / 关开关只关收束不关留痕。工作台遗留 `mode=bulk` 覆盖不再让横幅静默失效。
+- **极快 worker 丢横幅**：worker 在首个哨兵 tick 前就写旗并结束时，末个 worker 收尾再扫一次黑板补落账。
+- **工作台「保存并应用」抹掉 tier 标签**：client `normalize` 在草稿丢 tier 但数值还在时按数值反推（`tierOf`）补回；数值清空 = follow 时不补，收回语义不变。
+
+### Added
+
+- **dispatch / tick 回显 cwd + challenge**（返回 schema 同步声明 + 渲染），题名 / 目录错配一眼可见。
+- **`watch-arm` ledger**：每次武装哨兵记一笔 `subagents.jsonl`（cwd / challenge / baseline / mode / 首解cancel on/off）。桌面宿主丢弃插件 console（`ctx.logger` 不落盘），靠这笔取证；`ctx.logger.info` 保留给会落日志的宿主。
+
+### 回归
+
+- Python 153；node 86（orchestrator 67 + workbench 14 + bootstrap 5）。新增 / 改：bulk 覆盖仍留痕不收束、关开关仍留痕、快 worker 收尾留痕、cwd 默认回显、watch-arm 落账。
+
+---
+
 ## [1.13.0] - 2026-11-22
 
 分发修复：market 装完只有工作台、没有预设的根因（安装单位是 bundle，预设本体却留在脚本侧）——预设本体做成 market 可装的 `muteki-preset` bundle，并补齐文档措辞、安装去重与一条命令自检。

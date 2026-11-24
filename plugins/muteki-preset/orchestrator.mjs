@@ -199,6 +199,7 @@ export function apply(ctx, config) {
   const runsFile = join(config.storageDir, "runs.json");
   const subagentLog = join(config.storageDir, "subagents.jsonl");
   const flagsFile = join(config.storageDir, "flags.jsonl");
+  const watchFile = join(config.storageDir, "watch.jsonl");
   mkdirSync(config.storageDir, { recursive: true });
 
   // ── 工作台运行时覆盖层（settings.json）─────────────────────────────────
@@ -761,6 +762,16 @@ export function apply(ctx, config) {
     return run.status === 0 ? run.out.trim() || "default" : "default";
   };
 
+  // 会话工作目录默认值：与 dsh-subagent 省略 cwd 时同源（workingDirectory.ensure）。
+  // 旧默认 process.cwd() 是服务进程目录，导致编排器读 A 板、worker 写 B 板，首解永远看不到。
+  const sessionCwd = async (parent, signal) => {
+    try {
+      const wd = ctx.get("workingDirectory");
+      if (wd && typeof wd.ensure === "function") return await wd.ensure(parent, signal);
+    } catch { /* 服务不可用/已中断时回落 process.cwd() */ }
+    return undefined;
+  };
+
   /**
    * 进展快照：最新带证据 fact 的 id + flag 条数。
    * observation / deadend **不算进展**——硬题真正的风险是同一条死路换个说法反复试，
@@ -798,8 +809,8 @@ export function apply(ctx, config) {
   // 旧实现只中断「muteki_run 当前批次」：muteki_tick / muteki_dispatch 派出的 worker
   // 是 fire-and-forget，出现 flag 后没人中断它们——继续烧到自然结束，收束消息还会
   // 反复唤醒主会话，同一对话没法切下一题。现在凡经 dispatchTask 派出的 worker 都登记：
-  // 只要有活 worker、非 bulk、hardCancelOnFlag 未显式关，哨兵就轮询黑板；新 flag 出现
-  // → 落账横幅 + 中断全部活 worker。muteki_run 批等期间由 run 自己轮询并负责中断
+  // 只要有活 worker 哨兵就轮询黑板、新 flag 落账横幅；非 bulk 且 hardCancelOnFlag 未显式关
+  // 时再中断全部活 worker（bulk/关开关只留痕不收束）。muteki_run 批等期间由 run 自己轮询并负责中断
   // （runPolling 计数让哨兵让位，避免双倍读板）。
   const liveWorkers = new Map(); // childId → { parent, challenge, cwd, activation }
   const flagSeenByChallenge = new Map(); // challenge → Set
@@ -860,12 +871,9 @@ export function apply(ctx, config) {
   const hardCancelArmed = () => resolveLimits(cfg()).mode !== "bulk" && cfg().hardCancelOnFlag !== false;
   /** flag 路径专用：hardCancelOnFlag=false 时尊重配置不收 worker（用户中断路径不受此开关影响）。 */
   const cancelOnFlag = () => (cfg().hardCancelOnFlag !== false ? cancelAllWorkers("flag") : null);
-  const watchTick = () => {
-    if (liveWorkers.size === 0 || !hardCancelArmed()) {
-      stopWatch();
-      return;
-    }
-    if (runPolling > 0) return; // run 批等中：run 负责轮询与中断
+  /** 扫一次黑板：新 flag 落账横幅；仅 armed 时收束。tick 与「末个 worker 收尾」共用。 */
+  const sweepWatch = () => {
+    if (watchCwd === null || watchBaseline === null) return;
     const data = boardJson(watchCwd);
     const vals = (Array.isArray(data?.flags) ? data.flags : []).map(flagValue);
     // 用户中途 board use 切题：旧 baseline 对新题无效，重快照而不是误收束。
@@ -879,11 +887,18 @@ export function apply(ctx, config) {
     if (fresh.length === 0) return;
     for (const v of fresh) watchBaseline.add(v);
     recordNewFlags(watchChallenge, fresh, seenFor(watchChallenge));
-    cancelOnFlag();
+    if (hardCancelArmed()) cancelOnFlag();
+  };
+  const watchTick = () => {
+    if (liveWorkers.size === 0) {
+      stopWatch();
+      return;
+    }
+    if (runPolling > 0) return; // run 批等中：run 负责轮询与中断
+    sweepWatch();
   };
   /** 派单前调用：登记空时快照 baseline（极快 worker 可能在 startActivation 返回前就写回 flag）。 */
   const armWatch = (cwd, challenge) => {
-    if (!hardCancelArmed()) return;
     if (liveWorkers.size === 0 || challenge !== watchChallenge || cwd !== watchCwd) {
       watchBaseline = new Set(knownFlags(cwd).map(flagValue));
       watchCwd = cwd;
@@ -893,13 +908,30 @@ export function apply(ctx, config) {
       watchTimer = setInterval(watchTick, cfg().flagAlert ? 1000 : 2000);
       watchTimer.unref?.();
     }
+    // 留痕与硬 cancel 解耦后 bulk/关开关也会 arm（只落账不收束）；打一行让
+    // 「mode 被工作台覆盖成 bulk / 开关被关」这类静默失效一眼可见。
+    try {
+      ctx.logger?.info?.(
+        "muteki: 旗标哨兵 cwd=%s challenge=%s baseline=%d mode=%s 首解cancel=%s",
+        cwd, challenge, watchBaseline.size, resolveLimits(cfg()).mode, hardCancelArmed() ? "on" : "off",
+      );
+    } catch { /* 日志不许抛 */ }
+    // 桌面宿主会丢弃 console（logger 行不落盘）：同内容再记一笔 subagents.jsonl，保证可 grep 取证。
+    logSubagent("watch-arm", {
+      cwd, challenge, baseline: watchBaseline.size,
+      mode: resolveLimits(cfg()).mode, cancel: hardCancelArmed() ? "on" : "off",
+    });
   };
   const trackWorker = (activation, parent, challenge, cwd) => {
     liveWorkers.set(activation.childId, { parent, challenge, cwd, activation });
     const result = activation.result?.promise ?? activation.result;
     Promise.resolve(result).catch(() => {}).finally(() => {
       liveWorkers.delete(activation.childId);
-      if (liveWorkers.size === 0) stopWatch();
+      if (liveWorkers.size === 0) {
+        // 极快 worker 可能在首个 tick 前就写回 flag 并结束：收尾再扫一次，横幅不丢。
+        sweepWatch();
+        stopWatch();
+      }
     });
   };
 
@@ -1183,7 +1215,7 @@ ${contextText}
       },
       cwd: {
         type: "string",
-        description: "子代理工作目录；也决定 board.py 使用哪个工作区级黑板。",
+        description: "子代理工作目录；也决定 board.py 使用哪个工作区级黑板。省略时用会话工作目录（与子代理默认同源）。",
       },
       ...overrideParams,
     },
@@ -1195,10 +1227,12 @@ ${contextText}
           kind: { type: "string", required: true, const: "activation" },
           childId: { type: "string", required: true },
           name: { type: "string", required: true },
+          cwd: { type: "string", required: true },
+          challenge: { type: "string", required: true },
         },
       },
       render: (_args, value) => [
-        { type: "text", text: `已派发子代理 ${value.name}（${value.childId}）` },
+        { type: "text", text: `已派发子代理 ${value.name}（${value.childId}）· 题 ${value.challenge} · cwd ${value.cwd}` },
       ],
     },
     isConcurrencySafe: () => true,
@@ -1212,7 +1246,7 @@ ${contextText}
         throw new Error("muteki_dispatch 需要 subagents 服务，但当前 scope 不可用");
       }
 
-      const cwd = args.cwd || process.cwd();
+      const cwd = args.cwd || (await sessionCwd(exec.agent, exec.signal)) || process.cwd();
       const challenge = currentChallenge(cwd);
 
       const { state: quota, overrideNote } = await ensureQuota(challenge, args, exec, cwd, false);
@@ -1266,7 +1300,7 @@ ${contextText}
       noteWorker(activation.childId, challenge);
       trackWorker(activation, parent, challenge, cwd);
       recordRun(challenge);
-      return { kind: "activation", childId: activation.childId, name: activation.name };
+      return { kind: "activation", childId: activation.childId, name: activation.name, cwd, challenge };
     },
   }));
 
@@ -1283,7 +1317,7 @@ ${contextText}
       },
       cwd: {
         type: "string",
-        description: "黑板工作目录（决定用哪个工作区的 board.db），默认当前进程目录。",
+        description: "黑板工作目录（决定用哪个工作区的 board.db）。省略时用会话工作目录（与子代理默认同源）。",
       },
       ...overrideParams,
       provider: {
@@ -1305,6 +1339,8 @@ ${contextText}
         additionalProperties: false,
         properties: {
           kind: { type: "string", required: true, const: "tick" },
+          cwd: { type: "string", required: true },
+          challenge: { type: "string", required: true },
           dispatched: {
             type: "array",
             required: true,
@@ -1336,7 +1372,8 @@ ${contextText}
       if (!parent) throw new Error("muteki_tick 需要一个调用者 agent（exec.agent 为空）");
       const subagents = ctx.get("subagents");
       if (!subagents) throw new Error("muteki_tick 需要 subagents 服务，但当前 scope 不可用");
-      const cwd = args.cwd || process.cwd();
+      const cwd = args.cwd || (await sessionCwd(exec.agent, exec.signal)) || process.cwd();
+      const challenge = currentChallenge(cwd);
       const limit = Math.max(1, Math.min(3, args.limit ?? 2));
       // 与 muteki_run 一致：先回收上次中断后卡在 claimed 的任务，否则手动 tick 会看到空队列。
       try {
@@ -1345,11 +1382,10 @@ ${contextText}
         /* 没有卡住的任务时这条命令只打印提示，不影响派单 */
       }
       const tasks = openTasks(cwd).slice(0, limit);
-      if (tasks.length === 0) return { kind: "tick", dispatched: [] };
+      if (tasks.length === 0) return { kind: "tick", dispatched: [], cwd, challenge };
 
       const context = runBoard(["context"], cwd);
       const contextText = context.out.slice(0, 6000);
-      const challenge = currentChallenge(cwd);
 
       const dispatched = [];
       for (const task of tasks) {
@@ -1363,7 +1399,7 @@ ${contextText}
           name: activation.name,
         });
       }
-      return { kind: "tick", dispatched };
+      return { kind: "tick", dispatched, cwd, challenge };
     },
   }));
 
@@ -1400,7 +1436,7 @@ ${contextText}
       },
       cwd: {
         type: "string",
-        description: "黑板工作目录（决定用哪个工作区的 board.db），默认当前进程目录。",
+        description: "黑板工作目录（决定用哪个工作区的 board.db）。省略时用会话工作目录（与子代理默认同源）。",
       },
       ...overrideParams,
       provider: {
@@ -1527,7 +1563,7 @@ ${contextText}
       if (!parent) throw new Error("muteki_run 需要一个调用者 agent（exec.agent 为空）");
       const subagents = ctx.get("subagents");
       if (!subagents) throw new Error("muteki_run 需要 subagents 服务，但当前 scope 不可用");
-      const cwd = args.cwd || process.cwd();
+      const cwd = args.cwd || (await sessionCwd(exec.agent, exec.signal)) || process.cwd();
       const limit = Math.max(1, Math.min(3, args.limit ?? 2));
       const maxRounds = Math.max(1, Math.min(50, args.max_rounds ?? 10));
       const maxMs = Math.max(1, Math.min(120, args.max_minutes ?? 20)) * 60_000;
@@ -1827,7 +1863,7 @@ ${contextText}
       if (!subagents) {
         throw new Error("muteki_review 需要 subagents 服务，但当前 scope 不可用");
       }
-      const cwd = args.cwd || process.cwd();
+      const cwd = args.cwd || (await sessionCwd(exec.agent, exec.signal)) || process.cwd();
       const before = new Set(openReviewIds(cwd));
       const board = runBoard(["context"], cwd);
       const boardText = board.out.slice(0, 8000);
@@ -1931,7 +1967,7 @@ ${focus}
     },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const cwd = args.cwd || process.cwd();
+      const cwd = args.cwd || (await sessionCwd(exec.agent, exec.signal)) || process.cwd();
       const challenge = currentChallenge(cwd);
       const { state: quota, overrideNote } = await ensureQuota(challenge, args, exec, cwd, false);
       if (!quota.ok) {

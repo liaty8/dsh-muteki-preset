@@ -1,6 +1,6 @@
 {
   "name": "muteki-workbench",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "description": "Muteki 工作台 UI（不含预设本体，完整预设另装 muteki-preset）：右侧栏档位按钮调 mode/tier/并发/成本墙（运行时生效、保存不用重启），人民币/美元账本快照，派单自动打开子代理实时 pane",
   "repository": {
     "type": "git",
@@ -17,7 +17,9 @@
   },
   "dsh": {
     "bundle": {
-      "patch": ["./cordis.patch.yml"]
+      "patch": [
+        "./cordis.patch.yml"
+      ]
     },
     "client": {
       "platform": "web",
@@ -34,5 +36,11 @@
     "@deepseek-ai/dsh-client-ui-subagent": ">=0.2.2-rc.3 <0.2.3-0",
     "@deepseek-ai/dsh-host-webserver": ">=0.2.2-rc.3 <0.2.3-0"
   },
-  "keywords": ["dsh", "dsh-plugin", "muteki", "ctf", "workbench"]
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "muteki",
+    "ctf",
+    "workbench"
+  ]
 }

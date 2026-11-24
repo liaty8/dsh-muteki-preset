@@ -227,7 +227,9 @@ board.py context --all     # 跨题审计
 
 ### 5. 首解硬 cancel（全覆盖）
 
-本题一旦出现**新增** flag，立即收束**全部在跑 worker**——不只是 `muteki_run` 当前批次，`muteki_tick` / `muteki_dispatch` 派出的脱管 worker 也一样（活 worker 登记 + 旗标哨兵，`flagAlert` 开启时 1s 轮询、否则 2s）。收束 = `subagents.interrupt`（`kind: "ancestor"`）发信号 + receipt `dispose()` 硬收束兜底；中断失败不再静默，进 `subagents.jsonl` 的 `cancel-errors` 并在 run 返回的 `hardCancel.errors` 里报出。用户中断 run 时同样收束在跑 worker。`hardCancelOnFlag: false` 可关首解收束；**bulk 例外**——flag 按题归属，别的题还要打，不做全局收束。收束后同一对话即可 `board.py use` 切下一题继续，不用新开对话。
+本题一旦出现**新增** flag，立即收束**全部在跑 worker**——不只是 `muteki_run` 当前批次，`muteki_tick` / `muteki_dispatch` 派出的脱管 worker 也一样（活 worker 登记 + 旗标哨兵，`flagAlert` 开启时 1s 轮询、否则 2s）。收束 = `subagents.interrupt`（`kind: "ancestor"`）发信号 + receipt `dispose()` 硬收束兜底；中断失败不再静默，进 `subagents.jsonl` 的 `cancel-errors` 并在 run 返回的 `hardCancel.errors` 里报出。用户中断 run 时同样收束在跑 worker。`hardCancelOnFlag: false` 可关首解收束；**bulk 例外**——flag 按题归属，别的题还要打，不做全局收束。**留痕与收束解耦**：bulk / 关开关时哨兵仍把新 flag 落 `flags.jsonl` 点亮横幅，只是不收 worker；极快 worker 在首个 tick 前就写旗并结束时，收尾再扫一次保证横幅不丢。收束后同一对话即可 `board.py use` 切下一题继续，不用新开对话。
+
+**cwd 与可观测**：派单省略 `cwd` 时默认用**会话工作目录**（`workingDirectory.ensure`，与子代理省略 cwd 同源），不再误读服务进程目录的板；`muteki_dispatch` / `muteki_tick` 返回与渲染回显实际 `cwd` + `challenge`，题名落成 `default` 一眼可见。每次武装哨兵记一笔 `subagents.jsonl` 的 `watch-arm`（cwd / challenge / baseline / mode / 首解cancel on/off）——桌面宿主丢弃插件 console，靠这笔 ledger 取证。
 
 ### 6. 额度按题独立，且分「人主导 / 无人值守 / 靶场批量」三套
 
