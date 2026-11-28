@@ -1346,3 +1346,16 @@ test("cwd 默认: 省略 cwd 时用会话工作目录（workingDirectory），�
     },
   );
 });
+
+test("budget: 派单 prompt 注入剩余预算（软收敛），run 另带剩余分钟", { skip: SKIP_REASON }, async () => {
+  await withHarness({ worker: async () => {} }, async (h) => {
+    h.board(["use", "t-budget"]);
+    await h.call("muteki_dispatch", { prompt: "步骤：背景+证据+边界" });
+    const free = h.activations[0].opts.prompt[0].text;
+    assert.ok(free.includes("[预算]") && free.includes("整题剩"), "自由派单 prompt 应带预算软收敛行");
+    h.seedTask("预算步骤");
+    await h.call("muteki_run", { challenge: "t-budget", limit: 1 });
+    const runPrompt = h.activations[1].opts.prompt[0].text;
+    assert.ok(runPrompt.includes("[预算]") && runPrompt.includes("本轮剩余约"), "run 派单 prompt 应带剩余分钟");
+  });
+});

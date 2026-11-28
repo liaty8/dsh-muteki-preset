@@ -958,7 +958,16 @@ export function apply(ctx, config) {
     return options;
   };
 
-  const workerPrompt = (task, contextText, challenge) => fillCmd(`你是 Muteki 蜂群的一名 Worker，只执行下面这一个有界 Step。
+  /** 软收敛（借鉴 sapper）：把剩余预算写进派单 prompt，让 worker 自己收敛，而不是撞硬闸才停。 */
+  const budgetLine = (challenge, remainingMs) => {
+    const s = quotaState(challenge);
+    const leftCh = Math.max(0, s.limits.costPerChallenge - s.costTotal);
+    const leftHr = Math.max(0, s.limits.costPerHour - s.costHour);
+    const time = remainingMs > 0 ? `；本轮剩余约 ${Math.ceil(remainingMs / 60000)} 分钟` : "";
+    return `[预算] 本题已用 $${s.costTotal.toFixed(2)}/$${s.limits.costPerChallenge}（整题剩 $${leftCh.toFixed(2)}）；本小时 $${s.costHour.toFixed(2)}/$${s.limits.costPerHour}（剩 $${leftHr.toFixed(2)}）；派单令牌 ${s.bucket.tokens.toFixed(1)}/${s.bucket.capacity}${time}。请在预算内收敛：优先能复用、能交旗的增量，别重复已 deadend 的方向。`;
+  };
+
+  const workerPrompt = (task, contextText, challenge, remainingMs) => fillCmd(`你是 Muteki 蜂群的一名 Worker，只执行下面这一个有界 Step。
 
 当前题：${challenge || "default"}（黑板已按题隔离；你的所有黑板命令都只作用于这道题，不会看到旧题的结论）
 
@@ -969,6 +978,9 @@ ${contextText}
 任务编号：t${task.id}
 标题：${task.title}
 详情：${task.detail || "（无）"}
+
+## 预算（软收敛，硬闸仍会拦）
+${budgetLine(challenge, remainingMs)}
 
 ## 硬要求
 1. 开始前先跑一次 \`{{PYTHON}} {{BOARD}} context\`：如果图中已有 flag，立刻 \`{{PYTHON}} {{BOARD}} task done ${task.id}\` 并结束，不要重复劳动。
@@ -983,7 +995,7 @@ ${contextText}
 5. 提交完立即结束，不要续做别的任务。`);
 
   /** bulk 模式提示词：整批共用黑板，必须屏蔽「图中已有 flag 就结束」的共享捷径。 */
-  const workerPromptBulk = (task, challenge) => fillCmd(`你是 Muteki 靶场批量模式的一名 Worker，只执行下面这一个有界 Step（一道独立题目）。
+  const workerPromptBulk = (task, challenge, remainingMs) => fillCmd(`你是 Muteki 靶场批量模式的一名 Worker，只执行下面这一个有界 Step（一道独立题目）。
 
 当前批次：${challenge || "default"}（黑板整批共享，里面有**其它题**的结论与 flag：不要读它们，也不要因为图中已有 flag 就结束——只认你自己这道题打出来的 flag）
 
@@ -991,6 +1003,9 @@ ${contextText}
 任务编号：t${task.id}
 标题：${task.title}
 详情：${task.detail || "（无）"}
+
+## 预算（软收敛，硬闸仍会拦）
+${budgetLine(challenge, remainingMs)}
 
 ## 硬要求
 1. 只推进这道题；每条结论都要有真实工具输出作为证据。
@@ -1012,7 +1027,7 @@ ${contextText}
     const activation = await ctx.get("subagents").startActivation({
       provider: "spawn",
       label: opts.bulk ? `bulk-t${task.id}` : `tick-t${task.id}`,
-      prompt: [{ type: "text", text: opts.bulk ? workerPromptBulk(task, challenge) : workerPrompt(task, contextText, challenge) }],
+      prompt: [{ type: "text", text: opts.bulk ? workerPromptBulk(task, challenge, opts.remainingMs) : workerPrompt(task, contextText, challenge, opts.remainingMs) }],
       parent,
       signal: exec.signal,
       delivery: "parent",
@@ -1287,7 +1302,7 @@ ${contextText}
         provider: "spawn",
         label: args.name || "muteki-worker",
         ...(args.name ? { name: args.name } : {}),
-        prompt: [{ type: "text", text: args.prompt }],
+        prompt: [{ type: "text", text: args.prompt + "\n\n## 预算（软收敛，硬闸仍会拦）\n" + budgetLine(challenge) }],
         parent,
         signal: exec.signal,
         delivery: "parent",
@@ -1664,6 +1679,7 @@ ${contextText}
             args,
             contextText,
             challenge,
+            { remainingMs: Math.max(0, maxMs - (Date.now() - started)) },
           );
           if (!activation) continue;
           batch.push({ task, activation });
