@@ -967,6 +967,19 @@ export function apply(ctx, config) {
     return `[预算] 本题已用 $${s.costTotal.toFixed(2)}/$${s.limits.costPerChallenge}（整题剩 $${leftCh.toFixed(2)}）；本小时 $${s.costHour.toFixed(2)}/$${s.limits.costPerHour}（剩 $${leftHr.toFixed(2)}）；派单令牌 ${s.bucket.tokens.toFixed(1)}/${s.bucket.capacity}${time}。请在预算内收敛：优先能复用、能交旗的增量，别重复已 deadend 的方向。`;
   };
 
+  /** 尸检注入（借鉴 sapper）：上次 report/lessons 留下的教训，下次派单自动带上，别重复死路。 */
+  const lessonsBlock = (cwd, challenge) => {
+    try {
+      const p = join(cwd, ".muteki-board", `lessons-${challenge}.md`);
+      if (!existsSync(p)) return "";
+      const text = readFileSync(p, "utf8").trim();
+      if (!text) return "";
+      return "\n\n## 上次教训（自动注入，别重复死路）\n" + text.slice(0, 1200);
+    } catch {
+      return "";
+    }
+  };
+
   const workerPrompt = (task, contextText, challenge, remainingMs) => fillCmd(`你是 Muteki 蜂群的一名 Worker，只执行下面这一个有界 Step。
 
 当前题：${challenge || "default"}（黑板已按题隔离；你的所有黑板命令都只作用于这道题，不会看到旧题的结论）
@@ -1027,7 +1040,7 @@ ${budgetLine(challenge, remainingMs)}
     const activation = await ctx.get("subagents").startActivation({
       provider: "spawn",
       label: opts.bulk ? `bulk-t${task.id}` : `tick-t${task.id}`,
-      prompt: [{ type: "text", text: opts.bulk ? workerPromptBulk(task, challenge, opts.remainingMs) : workerPrompt(task, contextText, challenge, opts.remainingMs) }],
+      prompt: [{ type: "text", text: (opts.bulk ? workerPromptBulk(task, challenge, opts.remainingMs) : workerPrompt(task, contextText, challenge, opts.remainingMs)) + lessonsBlock(cwd, challenge) }],
       parent,
       signal: exec.signal,
       delivery: "parent",
@@ -1302,7 +1315,7 @@ ${budgetLine(challenge, remainingMs)}
         provider: "spawn",
         label: args.name || "muteki-worker",
         ...(args.name ? { name: args.name } : {}),
-        prompt: [{ type: "text", text: args.prompt + "\n\n## 预算（软收敛，硬闸仍会拦）\n" + budgetLine(challenge) }],
+        prompt: [{ type: "text", text: args.prompt + "\n\n## 预算（软收敛，硬闸仍会拦）\n" + budgetLine(challenge) + lessonsBlock(cwd, challenge) }],
         parent,
         signal: exec.signal,
         delivery: "parent",

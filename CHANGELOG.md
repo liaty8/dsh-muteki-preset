@@ -10,6 +10,27 @@
 
 ---
 
+## [1.14.0] - 2026-11-28
+
+借鉴 sapper-v2 的三项制度移植：预算进派单 prompt（软收敛）、黑板血缘边、按题尸检 lessons；硬闸与证据门一律不变。顺带修 chain 展示同边重复打印。
+
+### Added
+
+- **派单 prompt 预算软收敛行**：`muteki_dispatch` / `muteki_tick` / `muteki_run` / 自由派单的 worker prompt 追加「## 预算（软收敛，硬闸仍会拦）」——本题已用/整题剩余成本、本小时窗口、派单令牌 a/b、本轮剩余分钟数，让 worker 自己收敛而不是只靠硬闸拦。额度状态读自既有 quotaState，不新增计费口径。
+- **黑板血缘边 `link` / `chain`**：`board.py link <src> <dst> --kind derived_from|proves|disproves` 记事实/目标/旗标之间的推导与证明关系（幂等、跨题引用拒收、自环/非法 kind 报错）；`board.py chain <id>` 走传递闭包（深度≤4、≤40 行）；`read` 附直接血缘。additive `edges` 表，旧库零迁移。
+- **按题尸检 lessons**：`board.py report` 自动在黑板目录写 `lessons-<题>.md`（已排除方向/复核意见/已拿 flag/最新 10 条可复用事实）；`board.py lessons [--print-only]` 打印；编排器在同题下次派单 prompt 自动注入该文件（上限 1200 字，只进 prompt 不进 context），按题隔离不串题。
+
+### Fixed
+
+- **chain 同边重复打印**：BFS 父子路径各打印一次同一条边；改为按 (src,dst,kind) 去重，每边只打印一次，传递闭包不变。
+
+### 回归
+
+- Python 162；node 88（orchestrator 69 + workbench 14 + bootstrap 5）。新增：血缘边 6 例（含 chain 去重计数断言）、lessons 3 例（report 落盘 / lessons 打印 / --print-only 不写盘）、orchestrator 预算行与 lessons 注入断言。
+- 实机三轮全通过：预算行两路径正确且硬闸不变；血缘 5 项（含跨题 link 拒收）；chain 去重 + lessons 5 项（report 落盘、print-only 不写盘、派单注入、按题隔离）。
+
+---
+
 ## [1.13.1] - 2026-11-24
 
 首解即报实机失效三因修复（派单误读服务进程目录的板 / bulk 覆盖静默关哨兵 / 极快 worker 丢横幅），并把哨兵状态做成桌面可取证；顺带修工作台保存抹掉 tier 标签。

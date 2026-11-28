@@ -11,8 +11,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 
 import {
   createHarness,
@@ -1357,5 +1358,16 @@ test("budget: 派单 prompt 注入剩余预算（软收敛），run 另带剩余
     await h.call("muteki_run", { challenge: "t-budget", limit: 1 });
     const runPrompt = h.activations[1].opts.prompt[0].text;
     assert.ok(runPrompt.includes("[预算]") && runPrompt.includes("本轮剩余约"), "run 派单 prompt 应带剩余分钟");
+  });
+});
+
+test("lessons: 上次尸检教训自动注入派单 prompt", { skip: SKIP_REASON }, async () => {
+  await withHarness({ worker: async () => {} }, async (h) => {
+    h.board(["use", "t-les"]);
+    mkdirSync(join(h.ws, ".muteki-board"), { recursive: true });
+    writeFileSync(join(h.ws, ".muteki-board", "lessons-t-les.md"), "# lessons-t-les\n## 已排除方向\n- d1 爆破不可行\n", "utf8");
+    await h.call("muteki_dispatch", { prompt: "步骤：背景+证据+边界" });
+    const p = h.activations[0].opts.prompt[0].text;
+    assert.ok(p.includes("上次教训") && p.includes("爆破不可行"), "派单 prompt 应自动注入上次尸检教训");
   });
 });

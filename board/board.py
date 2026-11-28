@@ -60,7 +60,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.13.1"
+__version__ = "1.14.0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -134,6 +134,16 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS edges (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    challenge  TEXT NOT NULL DEFAULT 'default',
+    src        TEXT NOT NULL,
+    dst        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    note       TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(challenge, src, dst, kind)
 );
 """
 
@@ -1211,6 +1221,16 @@ def cmd_read(args: argparse.Namespace) -> int:
         return 1
     for key in row.keys():
         print(f"{key}: {row[key]}")
+    canonical = f"{prefix}{number}"
+    ch = current_challenge(conn)
+    edges = conn.execute(
+        "SELECT src, dst, kind FROM edges WHERE challenge=? AND (src=? OR dst=?) ORDER BY id",
+        (ch, canonical, canonical),
+    ).fetchall()
+    if edges:
+        print("lineage:")
+        for e in edges:
+            print(f"  {e['src']} -{e['kind']}-> {e['dst']}")
     return 0
 
 
@@ -1402,6 +1422,148 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 ADOPT_TABLES = {"f": "facts", "d": "deadends", "g": "flags", "t": "tasks", "r": "reviews"}
 
+EDGE_KINDS = ("derived_from", "proves", "disproves")
+
+
+def _ref_parts(raw: str):
+    """把 f3 / d2 / g1 / t2 / r1 解析成 (前缀, 表, 数字id)；非法返回 None。"""
+    raw = str(raw).strip()
+    prefix = raw[0].lower() if raw[:1].isalpha() else "f"
+    number = raw[1:] if raw[:1].isalpha() else raw
+    if prefix not in ADOPT_TABLES or not number.isdigit():
+        return None
+    return prefix, ADOPT_TABLES[prefix], int(number)
+
+
+def _ref_canon(raw: str):
+    parts = _ref_parts(raw)
+    return f"{parts[0]}{parts[2]}" if parts else None
+
+
+def _ref_exists(conn, ch: str, raw: str) -> bool:
+    parts = _ref_parts(raw)
+    if not parts:
+        return False
+    _, table, nid = parts
+    return conn.execute(
+        f"SELECT 1 FROM {table} WHERE id=? AND challenge=?", (nid, ch)
+    ).fetchone() is not None
+
+
+def cmd_link(args: argparse.Namespace) -> int:
+    """血缘边：src -kind-> dst（derived_from/proves/disproves），供 chain/read 吐攻击链。"""
+    conn = connect()
+    ch = current_challenge(conn)
+    src, dst = _ref_canon(args.src), _ref_canon(args.dst)
+    if src is None or dst is None:
+        print(f"无法解析 id：{args.src} / {args.dst}", file=sys.stderr)
+        return 2
+    if args.kind not in EDGE_KINDS:
+        print(f"未知 kind：{args.kind}（可选 {'/'.join(EDGE_KINDS)}）", file=sys.stderr)
+        return 2
+    if src == dst:
+        print("不能自己连自己", file=sys.stderr)
+        return 2
+    for ref in (src, dst):
+        if not _ref_exists(conn, ch, ref):
+            print(f"{ref} 不存在或不属于当前题 {ch}", file=sys.stderr)
+            return 1
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO edges (challenge, src, dst, kind, note, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (ch, src, dst, args.kind, args.note, now()),
+    )
+    if cur.rowcount == 0:
+        print(f"{src} -{args.kind}-> {dst} 已存在，不重复记")
+        return 0
+    commit_with_event(conn, "edge_added", {"challenge": ch, "src": src, "dst": dst, "kind": args.kind})
+    print(f"e{cur.lastrowid} 已记血缘：{src} -{args.kind}-> {dst}（{ch}）")
+    return 0
+
+
+def cmd_chain(args: argparse.Namespace) -> int:
+    """打印某条记录的血缘攻击链（双向 BFS，限深限宽防环）。"""
+    conn = connect()
+    ch = current_challenge(conn)
+    root = _ref_canon(args.id)
+    if root is None or not _ref_exists(conn, ch, root):
+        print(f"{args.id} 不存在或不属于当前题 {ch}", file=sys.stderr)
+        return 1
+    seen = {root}
+    printed = set()
+    frontier = [(root, 0)]
+    lines = []
+    while frontier and len(lines) < 40:
+        node, depth = frontier.pop(0)
+        if depth >= 4:
+            continue
+        rows = conn.execute(
+            "SELECT src, dst, kind FROM edges WHERE challenge=? AND (src=? OR dst=?) ORDER BY id",
+            (ch, node, node),
+        ).fetchall()
+        for e in rows:
+            if e["src"] == node:
+                line = f"{'  ' * depth}{node} -{e['kind']}-> {e['dst']}"
+                other = e["dst"]
+            else:
+                line = f"{'  ' * depth}{e['src']} -{e['kind']}-> {node}"
+                other = e["src"]
+            key = (e["src"], e["dst"], e["kind"])
+            if key not in printed:
+                printed.add(key)
+                lines.append(line)
+            if other not in seen:
+                seen.add(other)
+                frontier.append((other, depth + 1))
+    print(f"chain {root}（{ch}）：")
+    if not lines:
+        print("  （无血缘边；用 link 记录 derived_from/proves/disproves）")
+    for ln in lines:
+        print(ln)
+    return 0
+
+
+def _lessons_path(conn, ch: str) -> str:
+    db = conn.execute("PRAGMA database_list").fetchone()[2]
+    return os.path.join(os.path.dirname(db), f"lessons-{ch}.md")
+
+
+def _lessons_markdown(conn, ch: str) -> str:
+    """尸检教训：死路/复核/flag/可复用结论，供下次开题自动注入（借鉴 sapper 尸检喂立法）。"""
+    dead = conn.execute("SELECT * FROM deadends WHERE challenge=? ORDER BY id", (ch,)).fetchall()
+    rev = conn.execute("SELECT * FROM reviews WHERE challenge=? ORDER BY id", (ch,)).fetchall()
+    fl = conn.execute("SELECT * FROM flags WHERE challenge=? ORDER BY id", (ch,)).fetchall()
+    fac = conn.execute(
+        "SELECT * FROM facts WHERE challenge=? AND level='fact' AND superseded_by IS NULL "
+        "ORDER BY id DESC LIMIT 10", (ch,),
+    ).fetchall()
+    L = [f"# lessons-{ch}", "", "## 已排除方向（别再试）", ""]
+    L += [
+        f"- d{r['id']} {r['reason']}（测：{short(r['tested'] or '', 80)}；观：{short(r['observed'] or '', 80)}）"
+        for r in dead
+    ] or ["（无）"]
+    L += ["", "## 复核意见", ""]
+    L += [f"- r{r['id']} [{r['kind']}] {r['status']} {short(r['note'], 120)}" for r in rev] or ["（无）"]
+    L += ["", "## 已拿 flag", ""]
+    L += [f"- g{r['id']} [{r['status']}] {r['value']}" for r in fl] or ["（无）"]
+    L += ["", "## 可复用结论（最新 10 条事实）", ""]
+    L += [f"- f{r['id']} {r['title']}：{short(r['content'], 120)}" for r in fac] or ["（无）"]
+    return "\n".join(L) + "\n"
+
+
+def cmd_lessons(args: argparse.Namespace) -> int:
+    """生成/查看本题尸检教训 lessons-<题>.md（report 也会自动写一份）。"""
+    conn = connect()
+    ch = str(getattr(args, "challenge", None) or current_challenge(conn)).strip()
+    md = _lessons_markdown(conn, ch)
+    print(md.rstrip())
+    if not getattr(args, "print_only", False):
+        path = _lessons_path(conn, ch)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(md)
+        print(f"\n（已写 {path}；下次派单自动注入）")
+    return 0
+
 
 def cmd_adopt(args: argparse.Namespace) -> int:
     """B4：把记录归属迁移到目标题（默认当前题），解决 legacy / 旧题数据孤儿问题。"""
@@ -1537,6 +1699,13 @@ def cmd_report(args: argparse.Namespace) -> int:
     all_flag = bool(getattr(args, "all", False)) and not target
     ch = str(target).strip() if target else current
     cond, params = ("", []) if all_flag else (" AND challenge = ?", [ch])
+
+    # 尸检喂立法：report 顺手写 lessons-<题>.md，下次派单自动注入（失败不阻断报告）。
+    try:
+        with open(_lessons_path(conn, ch), "w", encoding="utf-8") as f:
+            f.write(_lessons_markdown(conn, ch))
+    except OSError:
+        pass
 
     facts = conn.execute(
         f"SELECT * FROM facts WHERE level='fact' AND superseded_by IS NULL{cond} ORDER BY id", params
@@ -1899,6 +2068,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("read", help="读取一条记录，如 f3 / d2 / g1 / r1 / t2 / a1x2")
     p.add_argument("id")
     p.set_defaults(func=cmd_read)
+
+    p = sub.add_parser("link", help="记血缘边：src -kind-> dst（derived_from/proves/disproves），供 chain/read 吐攻击链")
+    p.add_argument("src", help="起点记录 id，如 f3 / g1")
+    p.add_argument("dst", help="终点记录 id，如 f5 / g1")
+    p.add_argument("--kind", default="derived_from", help="derived_from / proves / disproves")
+    p.add_argument("--note", default=None, help="可选备注")
+    p.set_defaults(func=cmd_link)
+
+    p = sub.add_parser("chain", help="打印某条记录的血缘攻击链（双向、限深防环）")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_chain)
+
+    p = sub.add_parser("lessons", help="生成/查看本题尸检教训 lessons-<题>.md（report 也会自动写）")
+    p.add_argument("--challenge", default=None, help="目标题名，省略则用当前题")
+    p.add_argument("--print-only", action="store_true", help="只打印不写盘")
+    p.set_defaults(func=cmd_lessons)
 
     p = sub.add_parser("adopt", help="把记录归属迁移到目标题（默认当前题），解决 legacy/旧题孤儿数据")
     p.add_argument("ids", nargs="+", help="记录 id，如 f1 d3 g1 t2 r1；可逗号分隔或重复传参")

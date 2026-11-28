@@ -1101,5 +1101,92 @@ class TestUsabilityFixes(BoardCase):
         self.assertIn("[观察]", obs)
 
 
+class TestLineageEdges(BoardCase):
+    def _seed_chain(self) -> None:
+        self.board("use", "t-edge")
+        self.board("fact", "入口", "发现登录口")
+        self.board("fact", "绕过", "空 token 绕过")
+        self.board("flag", "flag{edge}", "--source", "t")
+        self.board("link", "f2", "f1", "--kind", "derived_from")
+        self.board("link", "g1", "f2", "--kind", "proves")
+
+    def test_link_writes_edge_and_event(self) -> None:
+        self._seed_chain()
+        rows = self.query("SELECT src, dst, kind FROM edges")
+        self.assertIn(("f2", "f1", "derived_from"), rows)
+        self.assertIn(("g1", "f2", "proves"), rows)
+        self.assertIn("edge_added", self.event_kinds())
+
+    def test_read_shows_lineage(self) -> None:
+        self._seed_chain()
+        out = self.board("read", "f2").stdout
+        self.assertIn("lineage:", out)
+        self.assertIn("f2 -derived_from-> f1", out)
+        self.assertIn("g1 -proves-> f2", out)
+
+    def test_chain_transitive(self) -> None:
+        self._seed_chain()
+        out = self.board("chain", "f1").stdout
+        self.assertIn("f2 -derived_from-> f1", out)
+        self.assertIn("g1 -proves-> f2", out)
+        # 展示去重：同一条边只打印一次（底层 edges 本就只有一条）
+        self.assertEqual(out.count("f2 -derived_from-> f1"), 1)
+        self.assertEqual(out.count("g1 -proves-> f2"), 1)
+
+    def test_link_rejects_missing_self_and_bad_kind(self) -> None:
+        self.board("use", "t-edge")
+        self.board("fact", "入口", "x")
+        self.board("link", "f1", "f9", expect=1)
+        self.board("link", "f1", "f1", expect=2)
+        self.board("link", "f1", "f1", "--kind", "bogus", expect=2)
+
+    def test_link_duplicate_idempotent(self) -> None:
+        self._seed_chain()
+        out = self.board("link", "f2", "f1", "--kind", "derived_from").stdout
+        self.assertIn("已存在", out)
+        self.assertEqual(len(self.query("SELECT 1 FROM edges")), 2)
+
+    def test_lineage_scoped_to_challenge(self) -> None:
+        self._seed_chain()
+        self.board("use", "other")
+        self.board("fact", "别题", "y")
+        self.board("chain", "g1", expect=1)  # g1 只存在于 t-edge
+        out = self.board("read", "f1").stdout
+        self.assertNotIn("lineage:", out)
+
+
+class TestLessons(BoardCase):
+    def _seed(self) -> None:
+        self.board("use", "t-les")
+        self.board("fact", "可复用", "空 token 绕过成立")
+        self.board("deadend", "爆破不可行", "--tested", "top100", "--observed", "全 401")
+        self.board("review", "add", "--kind", "gap", "--note", "缺对 X 验证")
+        self.board("flag", "flag{les}", "--source", "t")
+
+    def test_report_writes_lessons_file(self) -> None:
+        self._seed()
+        self.board("report")
+        p = self.db.parent / "lessons-t-les.md"
+        self.assertTrue(p.exists())
+        text = p.read_text(encoding="utf-8")
+        self.assertIn("已排除方向", text)
+        self.assertIn("爆破不可行", text)
+        self.assertIn("flag{les}", text)
+        self.assertIn("缺对 X 验证", text)
+
+    def test_lessons_cmd_prints_and_writes(self) -> None:
+        self._seed()
+        out = self.board("lessons").stdout
+        self.assertIn("lessons-t-les", out)
+        self.assertIn("已写", out)
+        self.assertTrue((self.db.parent / "lessons-t-les.md").exists())
+
+    def test_lessons_print_only_no_write(self) -> None:
+        self._seed()
+        out = self.board("lessons", "--print-only").stdout
+        self.assertNotIn("已写", out)
+        self.assertFalse((self.db.parent / "lessons-t-les.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

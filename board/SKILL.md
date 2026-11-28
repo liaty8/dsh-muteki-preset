@@ -184,13 +184,23 @@ priority：1 低 / 2 中 / 3 高。`task claim` 只在 open 状态成功，抢�
 {{PYTHON}} {{BOARD_PY}} fact list                 # 列出事实与观察（显式标 [事实]/[观察]；--level fact 只看事实）
 {{PYTHON}} {{BOARD_PY}} stats
 
+# 血缘（攻击链）：记录「这条结论/flag 是怎么推出来的」
+{{PYTHON}} {{BOARD_PY}} link f2 f1 --kind derived_from   # f2 由 f1 推出
+{{PYTHON}} {{BOARD_PY}} link g1 f2 --kind proves         # f2 证明 g1
+{{PYTHON}} {{BOARD_PY}} link f3 d1 --kind disproves      # d1 死路排除 f3
+{{PYTHON}} {{BOARD_PY}} chain g1                         # 吐 g1 的血缘攻击链
+
+# 尸检教训：report 会自动写 lessons-<题>.md；也可手动生成/查看，下次派单自动注入
+{{PYTHON}} {{BOARD_PY}} lessons
+{{PYTHON}} {{BOARD_PY}} lessons --print-only
+
 # 复盘报告：默认 Markdown（可直接贴 writeup），--json 供插件消费；--challenge / --all 指定范围
 {{PYTHON}} {{BOARD_PY}} report
 {{PYTHON}} {{BOARD_PY}} report --json
 ```
 
 `search` 覆盖 fact / deadend / flag / **task / review**（按题隔离，`--all` 跨题）。
-`read` 支持 `f3` / `d2` / `g1` / `r1` / **`t2`** / `a<证据id>`，输出该条记录的全部字段。
+`read` 支持 `f3` / `d2` / `g1` / `r1` / **`t2`** / `a<证据id>`，输出该条记录的全部字段；若该记录有血缘边会附 `lineage:` 段。`chain <id>` 双向吐攻击链（限深防环、同边只打印一次）。`link` 的 kind 仅 `derived_from` / `proves` / `disproves`，src/dst 必须存在且属当前题，重复边幂等不重记。`lessons` 生成/查看本题尸检教训（死路/复核/flag/可复用结论），`report` 也会自动写一份，下次派单自动注入。
 
 id 前缀：`f`=fact/observation、`d`=deadend、`g`=flag、`t`=task、`r`=review、`a`=artifact。
 
